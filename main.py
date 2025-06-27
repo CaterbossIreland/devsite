@@ -1,9 +1,12 @@
-from fastapi import FastAPI, UploadFile, File
-import uvicorn
+from fastapi import FastAPI
+from graph_auth import get_access_token
 
 app = FastAPI()
 
-@app.post("/check_stock")
-async def check_stock(order_csv: UploadFile = File(...)):
-    contents = await order_csv.read()
-    return {"message": "Order file received", "filename": order_csv.filename}
+@app.get("/")
+def root():
+    try:
+        token = get_access_token()
+        return {"access_token": token[:20] + "..."}
+    except Exception as e:
+        return {"error": str(e)}
