@@ -1,18 +1,19 @@
-from graph_auth import get_access_token
 import requests
-import os
 
-GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
-USER_ID = os.environ.get("USER_ID")  # 👈 You’ll add this to Render
+def get_access_token():
+    tenant_id = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
+    client_id = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
+    client_secret = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 
-def list_onedrive_root_files():
-    token = get_access_token()
-    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
     
-    url = f"{GRAPH_ROOT}/users/{USER_ID}/drive/root/children"
+    data = {
+        "client_id": client_id,
+        "scope": "https://graph.microsoft.com/.default",
+        "client_secret": client_secret,
+        "grant_type": "client_credentials"
+    }
 
-    response = requests.get(url, headers=headers)
+    response = requests.post(url, data=data)
     response.raise_for_status()
-    
-    files = response.json()["value"]
-    return [{ "name": f["name"], "id": f["id"] } for f in files]
+    return response.json()["access_token"]
