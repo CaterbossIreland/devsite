@@ -94,4 +94,20 @@ def list_drives():
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
     return response.json()
+@app.get("/list_files")
+def list_files():
+    token = get_access_token()
+
+    # Replace with your actual Drive ID
+    drive_id = "b!Xj5dfJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2Ir_D-BcEXAr8106SpXDV8pjRLut"
+
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return response.json()
 
