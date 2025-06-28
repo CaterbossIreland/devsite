@@ -29,3 +29,20 @@ async def load_stock_data(site_id: str, drive_id: str, file_ids: list[str], toke
         all_data.append(df)
     combined = pd.concat(all_data)
     return combined.groupby('SKU', as_index=False).sum()  # Summed quantities for same SKU
+def check_stock_availability(orders_df: pd.DataFrame, stock_df: pd.DataFrame) -> pd.DataFrame:
+    # Ensure columns are standardized
+    orders = orders_df.rename(columns=lambda x: x.strip())
+    stock = stock_df.rename(columns=lambda x: x.strip())
+
+    # Aggregate duplicate SKUs in orders
+    orders_grouped = orders.groupby("SKU", as_index=False).agg({"Quantity": "sum"}).rename(columns={"Quantity": "ordered_qty"})
+    stock = stock.rename(columns={"Quantity": "stock_qty"})
+
+    # Merge both sets
+    merged = pd.merge(orders_grouped, stock, on="SKU", how="left").fillna(0)
+
+    # Calculate what we can ship and what we need to order
+    merged["from_stock"] = merged.apply(lambda row: min(row["ordered_qty"], row["stock_qty"]), axis=1)
+    merged["to_order"] = merged["ordered_qty"] - merged["from_stock"]
+
+    return merged
