@@ -27,13 +27,18 @@ def get_access_token():
     return response.json()["access_token"]
 
 # Endpoint to list SharePoint sites and get their IDs
-@app.get("/list_sites")
-def list_sites():
-    token = get_access_token()
+@app.get("/list_files")
+def list_files():
+    site_id = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
+    drive_id = "b!Xj50fJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2lr_D-BcEXAr8106SpXDV8pjRLut"
+    token = get_token()
     headers = {"Authorization": f"Bearer {token}"}
-    url = "https://graph.microsoft.com/v1.0/sites?search=*"
+    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root/children"
     response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        return {"detail": response.text}
     return response.json()
+
 
 # Example request model for read/write endpoints
 class ExcelFileRequest(BaseModel):
