@@ -16,7 +16,7 @@ CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
 
 # ⛔️ TEMP placeholders: Update these with valid DRIVE_ID + item_ids from /list_drives and /list_files
-DRIVE_ID = "PASTE_NEW_DRIVE_ID_HERE"
+DRIVE_ID = "b!Xj50fJnPokmPnLx_o7xwsZaZKmCpozxHmBc_Zlr_D-BcEXAr81O6SpXDV8pjRLut"
 STOCK_FILE_IDS = [
     "PASTE_FIRST_FILE_ID_HERE",
     "PASTE_SECOND_FILE_ID_HERE"
