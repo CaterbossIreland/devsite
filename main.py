@@ -75,39 +75,38 @@ def check_stock_availability(orders_df, stock_df):
     return merged[["SKU", "QUANTITY", "QTY", "FROM_STOCK", "TO_ORDER"]]
 
 # === Process Orders ===
+from fastapi import UploadFile, File, HTTPException
+import pandas as pd
+import io
+
 @app.post("/process_orders")
 async def process_orders(file: UploadFile = File(...)):
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-            contents = await file.read()
-            tmp.write(contents)
-            tmp_path = tmp.name
+        # Read file into memory
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
 
-        ext = os.path.splitext(file.filename)[-1].lower()
-        if ext == ".csv":
-            orders_df = pd.read_csv(tmp_path)
-        elif ext in [".xls", ".xlsx"]:
-            orders_df = pd.read_excel(tmp_path)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Please upload .csv or .xlsx")
+        # DEBUG: Show available columns
+        print("Excel Columns:", df.columns.tolist())
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error reading uploaded file: {e}")
+        # Force column names to uppercase (in case of casing mismatch)
+        df.columns = df.columns.str.upper()
 
-    try:
-        stock_df = load_stock_data()
-        result_df = check_stock_availability(orders_df, stock_df)
+        # Check required columns
+        required_columns = {"ORDER", "SKU", "QTY"}
+        if not required_columns.issubset(df.columns):
+            missing = required_columns - set(df.columns)
+            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
 
-        supplier_list = result_df[result_df["TO_ORDER"] > 0][["SKU", "TO_ORDER"]]
-        from_stock_list = result_df[result_df["FROM_STOCK"] > 0][["SKU", "FROM_STOCK"]]
+        # Optional: trim and clean data
+        df = df.dropna(subset=["ORDER", "SKU", "QTY"])
+        df["QTY"] = df["QTY"].astype(int)
 
-        return {
-            "supplier_list": supplier_list.to_dict(orient="records"),
-            "dispatch_from_stock": from_stock_list.to_dict(orient="records")
-        }
+        # Continue processing...
+        return {"status": "success", "rows": len(df)}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 # === Optional Tools ===
 @app.get("/list_sites")
