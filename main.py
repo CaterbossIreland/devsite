@@ -69,29 +69,42 @@ def check_stock_availability(orders_df, stock_df):
     return merged[["SKU", "QUANTITY", "QTY", "FROM_STOCK", "TO_ORDER"]]
 
 # === Process Orders ===
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, HTTPException
 from stock_utils import load_stock_data, check_stock_availability
 import pandas as pd
 from tempfile import NamedTemporaryFile
+import os
 
 @app.post("/process_orders")
 async def process_orders(file: UploadFile = File(...)):
     try:
-        with NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+        # Save uploaded file to a temp path
+        with NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
             contents = await file.read()
             tmp.write(contents)
             tmp_path = tmp.name
-        orders_df = pd.read_csv(tmp_path)
+
+        # Determine file type and parse accordingly
+        ext = os.path.splitext(file.filename)[-1].lower()
+        if ext == ".csv":
+            orders_df = pd.read_csv(tmp_path)
+        elif ext in [".xls", ".xlsx"]:
+            orders_df = pd.read_excel(tmp_path)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type. Please upload .csv or .xlsx")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error reading uploaded file: {e}")
 
     try:
         token = await get_access_token_async()
 
-        # 🔁 Replace with your actual IDs
+        # ✅ Replace with your actual IDs
         site_id = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
         drive_id = "b!Xj5dfJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2Ir_D-BcEXAr8106SpXDV8pjRLut"
-        stock_file_ids = ["01A7APJ75UFRW3STU5KRBLIDHJXYQZ7VNB", "01A7APJ75QXIGBJDVPZ5FLQNEV7VCR4NHZ"]
+        stock_file_ids = [
+            "01A7APJ75UFRW3STU5KRBLIDHJXYQZ7VNB",
+            "01A7APJ75QXIGBJDVPZ5FLQNEV7VCR4NHZ"
+        ]
 
         stock_df = await load_stock_data(site_id, drive_id, stock_file_ids, token)
         result_df = check_stock_availability(orders_df, stock_df)
