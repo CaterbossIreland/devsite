@@ -12,11 +12,14 @@ TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
 CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
 CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 
-SITE_ID = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
-DRIVE_ID = "b!Xj5dfJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2Ir_D-BcEXAr8106SpXDV8pjRLut"
+# ✅ NEW SITE_ID from list_sites response
+SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
+
+# ⛔️ TEMP placeholders: Update these with valid DRIVE_ID + item_ids from /list_drives and /list_files
+DRIVE_ID = "PASTE_NEW_DRIVE_ID_HERE"
 STOCK_FILE_IDS = [
-    "01YRKJEV7QKLNLZDCDFBFLRKFKWQCMKGCW",
-    "01YRKJEWCCJQSEAHHTRFDKB2MW2CXJOU3S"
+    "PASTE_FIRST_FILE_ID_HERE",
+    "PASTE_SECOND_FILE_ID_HERE"
 ]
 
 # === AUTH ===
