@@ -1,18 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import requests
+import httpx
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = FastAPI()
 
-TENANT_ID = os.getenv("TENANT_ID")
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+# === ENVIRONMENT CONFIGURATION ===
+TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
+CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
+CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 
-def get_access_token():
+# === SYNC ACCESS TOKEN FUNCTION ===
+def get_access_token_sync():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
         "client_id": CLIENT_ID,
@@ -25,10 +25,31 @@ def get_access_token():
         raise HTTPException(status_code=500, detail="Failed to obtain token")
     return response.json()["access_token"]
 
-# 📂 List SharePoint Sites
+# === ASYNC ACCESS TOKEN FUNCTION (optional use) ===
+async def get_access_token_async():
+    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    data = {
+        "client_id": CLIENT_ID,
+        "scope": "https://graph.microsoft.com/.default",
+        "client_secret": CLIENT_SECRET,
+        "grant_type": "client_credentials"
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, data=data, headers=headers)
+        response.raise_for_status()
+        return response.json()["access_token"]
+
+# === TEST ENDPOINT TO VERIFY TOKEN WORKS ===
+@app.get("/test_token")
+async def test_token():
+    token = await get_access_token_async()
+    return {"access_token": token}
+
+# === GET SHAREPOINT SITES ===
 @app.get("/list_sites")
 def list_sites():
-    token = get_access_token()
+    token = get_access_token_sync()
     headers = {"Authorization": f"Bearer {token}"}
     url = "https://graph.microsoft.com/v1.0/sites?search=*"
     response = requests.get(url, headers=headers)
@@ -36,10 +57,10 @@ def list_sites():
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
-# 📁 List Drives on a Site
+# === GET DRIVES ON A SHAREPOINT SITE ===
 @app.get("/list_drives")
 def list_drives():
-    token = get_access_token()
+    token = get_access_token_sync()
     site_id = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
     url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives"
     headers = {"Authorization": f"Bearer {token}"}
@@ -48,30 +69,29 @@ def list_drives():
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
-# 📄 List Files in the root of a Drive (uses drive_id directly)
+# === GET FILES IN A SPECIFIC DRIVE ROOT ===
 @app.get("/list_files")
 def list_files():
-    token = get_access_token()
+    token = get_access_token_sync()
     drive_id = "b!Xj5dfJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2Ir_D-BcEXAr8106SpXDV8pjRLut"
     site_id = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
     url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root/children"
-
     headers = {"Authorization": f"Bearer {token}"}
     response = requests.get(url, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
-# 📘 Request model for Excel file actions
+# === EXCEL MODEL FOR FILE TARGETING ===
 class ExcelFileRequest(BaseModel):
     site_id: str
     drive_id: str
     item_id: str
 
-# 📖 Read Excel worksheet list
+# === READ EXCEL WORKSHEETS ===
 @app.post("/read_excel")
 def read_excel(request: ExcelFileRequest):
-    token = get_access_token()
+    token = get_access_token_sync()
     headers = {"Authorization": f"Bearer {token}"}
     url = (
         f"https://graph.microsoft.com/v1.0/sites/{request.site_id}/drives/"
@@ -82,10 +102,10 @@ def read_excel(request: ExcelFileRequest):
         raise HTTPException(status_code=response.status_code, detail=response.json())
     return response.json()
 
-# ✍️ Write to Excel (A1 in Sheet1)
+# === WRITE TO CELL A1 IN SHEET1 ===
 @app.post("/write_excel")
 def write_excel(request: ExcelFileRequest):
-    token = get_access_token()
+    token = get_access_token_sync()
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -101,21 +121,3 @@ def write_excel(request: ExcelFileRequest):
     if response.status_code not in (200, 204):
         raise HTTPException(status_code=response.status_code, detail=response.json())
     return {"message": "Cell A1 updated"}
-
-import httpx
-
-# Async function to get a Microsoft Graph access token
-async def get_access_token():
-    url = "https://login.microsoftonline.com/ce280aae-ee92-41fe-ab60-66b37ebc97dd/oauth2/v2.0/token"
-    data = {
-        "client_id": "83acd574-ab02-4cfe-b28c-e38c733d9a52",
-        "scope": "https://graph.microsoft.com/.default",
-        "client_secret": "ff1f730a-0d62-470b-ba10-eb42e8132ed7",  # Replace this
-        "grant_type": "client_credentials",
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, data=data, headers=headers)
-        response.raise_for_status()
-        return response.json()["access_token"]
