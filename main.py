@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import pandas as pd
 import tempfile
 import requests
-import httpx
+import os
 
 app = FastAPI()
 
@@ -14,7 +14,10 @@ CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 
 SITE_ID = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
 DRIVE_ID = "b!Xj5dfJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2Ir_D-BcEXAr8106SpXDV8pjRLut"
-STOCK_FILE_IDS = ["01YRKJEV7QKLNLZDCDFBFLRKFKWQCMKGCW", "01YRKJEWCCJQSEAHHTRFDKB2MW2CXJOU3S"]
+STOCK_FILE_IDS = [
+    "01YRKJEV7QKLNLZDCDFBFLRKFKWQCMKGCW",
+    "01YRKJEWCCJQSEAHHTRFDKB2MW2CXJOU3S"
+]
 
 # === AUTH ===
 def get_access_token_sync():
@@ -69,22 +72,14 @@ def check_stock_availability(orders_df, stock_df):
     return merged[["SKU", "QUANTITY", "QTY", "FROM_STOCK", "TO_ORDER"]]
 
 # === Process Orders ===
-from fastapi import UploadFile, File, HTTPException
-from stock_utils import load_stock_data, check_stock_availability
-import pandas as pd
-from tempfile import NamedTemporaryFile
-import os
-
 @app.post("/process_orders")
 async def process_orders(file: UploadFile = File(...)):
     try:
-        # Save uploaded file to a temp path
-        with NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
             contents = await file.read()
             tmp.write(contents)
             tmp_path = tmp.name
 
-        # Determine file type and parse accordingly
         ext = os.path.splitext(file.filename)[-1].lower()
         if ext == ".csv":
             orders_df = pd.read_csv(tmp_path)
@@ -92,25 +87,16 @@ async def process_orders(file: UploadFile = File(...)):
             orders_df = pd.read_excel(tmp_path)
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type. Please upload .csv or .xlsx")
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error reading uploaded file: {e}")
 
     try:
-        token = await get_access_token_async()
-
-        # ✅ Replace with your actual IDs
-        site_id = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
-        drive_id = "b!Xj5dfJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2Ir_D-BcEXAr8106SpXDV8pjRLut"
-        stock_file_ids = [
-            "01A7APJ75UFRW3STU5KRBLIDHJXYQZ7VNB",
-            "01A7APJ75QXIGBJDVPZ5FLQNEV7VCR4NHZ"
-        ]
-
-        stock_df = await load_stock_data(site_id, drive_id, stock_file_ids, token)
+        stock_df = load_stock_data()
         result_df = check_stock_availability(orders_df, stock_df)
 
-        supplier_list = result_df[result_df["to_order"] > 0][["SKU", "to_order"]]
-        from_stock_list = result_df[result_df["from_stock"] > 0][["SKU", "from_stock"]]
+        supplier_list = result_df[result_df["TO_ORDER"] > 0][["SKU", "TO_ORDER"]]
+        from_stock_list = result_df[result_df["FROM_STOCK"] > 0][["SKU", "FROM_STOCK"]]
 
         return {
             "supplier_list": supplier_list.to_dict(orient="records"),
@@ -170,4 +156,3 @@ def write_excel(request: ExcelFileRequest):
     data = {"values": [["Updated by FastAPI!"]]}
     response = requests.patch(url, headers=headers, json=data)
     return {"message": "Cell A1 updated"}
-
