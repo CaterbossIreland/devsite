@@ -102,3 +102,20 @@ def write_excel(request: ExcelFileRequest):
         raise HTTPException(status_code=response.status_code, detail=response.json())
     return {"message": "Cell A1 updated"}
 
+import httpx
+
+# Async function to get a Microsoft Graph access token
+async def get_access_token():
+    url = "https://login.microsoftonline.com/ce280aae-ee92-41fe-ab60-66b37ebc97dd/oauth2/v2.0/token"
+    data = {
+        "client_id": "83acd574-ab02-4cfe-b28c-e38c733d9a52",
+        "scope": "https://graph.microsoft.com/.default",
+        "client_secret": "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i",  # Replace this
+        "grant_type": "client_credentials",
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, data=data, headers=headers)
+        response.raise_for_status()
+        return response.json()["access_token"]
