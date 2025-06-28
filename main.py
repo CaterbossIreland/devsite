@@ -78,4 +78,20 @@ def write_excel(request: ExcelFileRequest):
     if response.status_code not in (200, 204):
         raise HTTPException(status_code=response.status_code, detail=response.json())
     return {"message": "Cell A1 updated"}
+@app.get("/list_drives")
+def list_drives():
+    token = get_access_token()
+    
+    # Replace with your real Site ID from /list_sites
+    site_id = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
+    
+    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return response.json()
 
