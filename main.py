@@ -110,7 +110,7 @@ async def get_access_token():
     data = {
         "client_id": "83acd574-ab02-4cfe-b28c-e38c733d9a52",
         "scope": "https://graph.microsoft.com/.default",
-        "client_secret": "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i",  # Replace this
+        "client_secret": "ff1f730a-0d62-470b-ba10-eb42e8132ed7",  # Replace this
         "grant_type": "client_credentials",
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
