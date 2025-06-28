@@ -18,8 +18,8 @@ SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde
 # ⛔️ TEMP placeholders: Update these with valid DRIVE_ID + item_ids from /list_drives and /list_files
 DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
 STOCK_FILE_IDS = [
-    "PASTE_FIRST_FILE_ID_HERE",
-    "PASTE_SECOND_FILE_ID_HERE"
+    "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX",
+    "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"
 ]
 
 # === AUTH ===
