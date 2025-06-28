@@ -75,35 +75,63 @@ def check_stock_availability(orders_df, stock_df):
     return merged[["SKU", "QUANTITY", "QTY", "FROM_STOCK", "TO_ORDER"]]
 
 # === Process Orders ===
-from fastapi import UploadFile, File, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-import io
+from io import BytesIO
+
+app = FastAPI()
+
+# Optional: add CORS if testing from Swagger UI or browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Define required columns and aliases
+REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
+
+COLUMN_ALIASES = {
+    "ORDER NO": "ORDER",
+    "ORDER NUMBER": "ORDER",
+    "PRODUCT CODE": "SKU",
+    "ITEM CODE": "SKU",
+    "QUANTITY": "QTY",
+    "QTY.": "QTY",
+    "QTY ORDERED": "QTY",
+    "ORDER#": "ORDER"
+}
+
+def clean_column_name(col):
+    """Normalize and map column name to standard alias."""
+    col_cleaned = col.strip().upper()
+    return COLUMN_ALIASES.get(col_cleaned, col_cleaned)
 
 @app.post("/process_orders")
 async def process_orders(file: UploadFile = File(...)):
     try:
-        # Read file into memory
+        # Load Excel file into DataFrame
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents))
+        df = pd.read_excel(BytesIO(contents))
 
-        # DEBUG: Show available columns
-        print("Excel Columns:", df.columns.tolist())
+        # Normalize and alias column names
+        df.columns = [clean_column_name(c) for c in df.columns]
 
-        # Force column names to uppercase (in case of casing mismatch)
-        df.columns = df.columns.str.upper()
+        # Check for missing required columns
+        headers_set = set(df.columns)
+        missing = REQUIRED_COLUMNS - headers_set
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Processing failed: 400: Missing columns: {', '.join(missing)}"
+            )
 
-        # Check required columns
-        required_columns = {"ORDER", "SKU", "QTY"}
-        if not required_columns.issubset(df.columns):
-            missing = required_columns - set(df.columns)
-            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+        # Sample logic: count valid rows
+        row_count = df.shape[0]
 
-        # Optional: trim and clean data
-        df = df.dropna(subset=["ORDER", "SKU", "QTY"])
-        df["QTY"] = df["QTY"].astype(int)
-
-        # Continue processing...
-        return {"status": "success", "rows": len(df)}
+        return {"status": "success", "rows": row_count}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
