@@ -1,6 +1,10 @@
-import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import requests
-from fastapi import FastAPI
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -8,46 +12,70 @@ TENANT_ID = os.getenv("TENANT_ID")
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
-GRAPH_SCOPE = "https://graph.microsoft.com/.default"
-TOKEN_ENDPOINT = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-
-@app.get("/")
-def root():
-    return {"message": "Server is up and running."}
-
-@app.get("/get-token")
-def get_token():
+# Function to get OAuth2 token
+def get_access_token():
+    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
-        "grant_type": "client_credentials",
         "client_id": CLIENT_ID,
+        "scope": "https://graph.microsoft.com/.default",
         "client_secret": CLIENT_SECRET,
-        "scope": GRAPH_SCOPE
+        "grant_type": "client_credentials"
     }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    response = requests.post(TOKEN_ENDPOINT, data=data, headers=headers)
+    response = requests.post(url, data=data)
     if response.status_code != 200:
-        return {"error": response.text}
-    
+        raise HTTPException(status_code=500, detail="Failed to obtain token")
+    return response.json()["access_token"]
+
+# Endpoint to list SharePoint sites and get their IDs
+@app.get("/list_sites")
+def list_sites():
+    token = get_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = "https://graph.microsoft.com/v1.0/sites?search=*"
+    response = requests.get(url, headers=headers)
     return response.json()
 
-@app.get("/list-files")
-def list_files():
-    # Step 1: Get access token
-    token_resp = get_token()
-    if "access_token" not in token_resp:
-        return {"error": "Token fetch failed", "details": token_resp}
+# Example request model for read/write endpoints
+class ExcelFileRequest(BaseModel):
+    site_id: str
+    drive_id: str
+    item_id: str
 
-    token = token_resp["access_token"]
+# READ Excel contents from file
+@app.post("/read_excel")
+def read_excel(request: ExcelFileRequest):
+    token = get_access_token()
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Step 2: Call Graph API to list files in root of user's OneDrive
-   user_id = "008ae000-382a-4483-b89b-19b2ff510bca"  # or your Object ID
-   graph_endpoint = f"https://graph.microsoft.com/v1.0/users/{user_id}/drive/root/children"
-
-    response = requests.get(graph_endpoint, headers=headers)
-
+    url = (
+        f"https://graph.microsoft.com/v1.0/sites/{request.site_id}/drives/"
+        f"{request.drive_id}/items/{request.item_id}/workbook/worksheets"
+    )
+    response = requests.get(url, headers=headers)
     if response.status_code != 200:
-        return {"error": response.text}
-
+        raise HTTPException(status_code=response.status_code, detail=response.json())
     return response.json()
+
+# WRITE to Excel file (placeholder)
+@app.post("/write_excel")
+def write_excel(request: ExcelFileRequest):
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    # This is an example to update cell A1 in the first worksheet
+    url = (
+        f"https://graph.microsoft.com/v1.0/sites/{request.site_id}/drives/"
+        f"{request.drive_id}/items/{request.item_id}/workbook/worksheets('Sheet1')/range(address='A1')"
+    )
+    body = {
+        "values": [["Updated by FastAPI!"]]
+    }
+
+    response = requests.patch(url, headers=headers, json=body)
+    if response.status_code not in (200, 204):
+        raise HTTPException(status_code=response.status_code, detail=response.json())
+    return {"message": "Cell A1 updated"}
+
