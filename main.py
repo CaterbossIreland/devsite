@@ -69,25 +69,43 @@ def check_stock_availability(orders_df, stock_df):
     return merged[["SKU", "QUANTITY", "QTY", "FROM_STOCK", "TO_ORDER"]]
 
 # === Process Orders ===
+from fastapi import UploadFile, File
+from stock_utils import load_stock_data, check_stock_availability
+import pandas as pd
+from tempfile import NamedTemporaryFile
+
 @app.post("/process_orders")
 async def process_orders(file: UploadFile = File(...)):
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-            tmp.write(await file.read())
+        with NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            contents = await file.read()
+            tmp.write(contents)
             tmp_path = tmp.name
         orders_df = pd.read_csv(tmp_path)
-        stock_df = load_stock_data()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading uploaded file: {e}")
+
+    try:
+        token = await get_access_token_async()
+
+        # 🔁 Replace with your actual IDs
+        site_id = "caterboss.sharepoint.com,7c743e5e-cf99-49a2-8f9c-bc7fa3bc70b1,602a9996-a3a9-473c-9817-3f665aff0fe0"
+        drive_id = "b!Xj5dfJnPokmPnLx_o7xwsZaZKmCpozxHmBc_2Ir_D-BcEXAr8106SpXDV8pjRLut"
+        stock_file_ids = ["01A7APJ75UFRW3STU5KRBLIDHJXYQZ7VNB", "01A7APJ75QXIGBJDVPZ5FLQNEV7VCR4NHZ"]
+
+        stock_df = await load_stock_data(site_id, drive_id, stock_file_ids, token)
         result_df = check_stock_availability(orders_df, stock_df)
 
-        supplier_df = result_df[result_df["TO_ORDER"] > 0][["SKU", "TO_ORDER"]]
-        stock_df = result_df[result_df["FROM_STOCK"] > 0][["SKU", "FROM_STOCK"]]
+        supplier_list = result_df[result_df["to_order"] > 0][["SKU", "to_order"]]
+        from_stock_list = result_df[result_df["from_stock"] > 0][["SKU", "from_stock"]]
 
         return {
-            "supplier_list": supplier_df.to_dict(orient="records"),
-            "dispatch_from_stock": stock_df.to_dict(orient="records")
+            "supplier_list": supplier_list.to_dict(orient="records"),
+            "dispatch_from_stock": from_stock_list.to_dict(orient="records")
         }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
 
 # === Optional Tools ===
 @app.get("/list_sites")
