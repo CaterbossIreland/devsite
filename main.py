@@ -129,7 +129,8 @@ async def generate_docs(file: UploadFile = File(...)):
         order_df["Supplier Name"] = order_df["Offer SKU"].map(supplier_map)
 
         nisbets_df = order_df[order_df["Supplier Name"] == "nisbets"][["Order number", "Offer SKU", "Quantity"]]
-        nortons_df = order_df[order_df["Supplier Name"] == "nortons"]["Order number", "Offer SKU", "Quantity"]
+        nortons_df = order_df[order_df["Supplier Name"] == "nortons"][["Order number", "Offer SKU", "Quantity"]]
+
 
         nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
         upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
