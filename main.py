@@ -113,6 +113,7 @@ async def update_stock(supplier_name: str, items: dict):
 async def generate_docs(file: UploadFile = File(...)):
     try:
         order_df = pd.read_excel(file.file, engine="openpyxl")
+        order_df.columns = order_df.columns.str.strip()
 
         required_cols = ["Offer SKU", "Order number", "Quantity"]
         missing_cols = [col for col in required_cols if col not in order_df.columns]
