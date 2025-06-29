@@ -8,7 +8,6 @@ import logging
 from datetime import datetime
 
 from graph_excel import download_excel_file, read_sheet_data, upload_csv_to_onedrive
-from graph_files import upload_stock_update
 from supplier_logic import identify_supplier
 from graph_files import (
     download_excel_file,
