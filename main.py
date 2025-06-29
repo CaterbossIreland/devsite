@@ -207,3 +207,51 @@ async def check_stock(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stock check failed: {str(e)}")
+@app.post("/update_stock_from_fulfilled")
+async def update_stock_from_fulfilled(fulfilled_list: list[dict]):
+    try:
+        # Step 1: Fetch stock data
+        file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
+        sheet_name = "Sheet1"
+        token = get_access_token_sync()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Read sheet
+        url = (
+            f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/"
+            f"items/{file_id}/workbook/worksheets('{sheet_name}')/usedRange(valuesOnly=true)"
+        )
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()["values"]
+
+        # Step 2: Parse to DataFrame
+        df = pd.DataFrame(data[1:], columns=data[0])
+        df["SKU"] = df["SKU"].astype(str)
+        df["QTY"] = pd.to_numeric(df["QTY"], errors="coerce").fillna(0).astype(int)
+
+        # Step 3: Apply updates from fulfilled_list
+        update_map = {item["SKU"]: item["fulfilled"] for item in fulfilled_list}
+        df["QTY"] = df.apply(
+            lambda row: max(row["QTY"] - update_map.get(row["SKU"], 0), 0), axis=1
+        )
+
+        # Step 4: Push updated values back
+        updated_values = [list(df.columns)] + df.astype(str).values.tolist()
+        patch_url = (
+            f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/"
+            f"items/{file_id}/workbook/worksheets('{sheet_name}')/range(address='A1')"
+        )
+        patch_headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        patch_payload = {"values": updated_values}
+
+        patch_response = requests.patch(patch_url, headers=patch_headers, json=patch_payload)
+        patch_response.raise_for_status()
+
+        return {"status": "success", "message": "Stock levels updated successfully"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stock update failed: {str(e)}")
