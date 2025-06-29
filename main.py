@@ -5,7 +5,7 @@ import requests
 from io import BytesIO
 
 # Import helper functions for Microsoft Graph (assuming these modules are available)
-from graph_auth import get_access_token_sync
+from graph_auth import get_access_token
 from graph_files import download_csv_file, download_excel_file, upload_to_onedrive
 
 # === Constants for Microsoft Graph IDs ===
@@ -123,7 +123,7 @@ async def process_order(file: UploadFile = File(...)):
                     target_order_list[sku]['orders'].add(order_num)
 
         # 5. Upload the updated stock files back to OneDrive (overwriting the originals)
-        token = get_access_token_sync()
+        token = get_access_token()
         headers_excel = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
