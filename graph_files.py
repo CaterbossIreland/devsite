@@ -5,43 +5,35 @@ from io import BytesIO
 from graph_auth import get_access_token
 
 def download_excel_file(drive_id: str, item_id: str) -> pd.DataFrame:
-    """Download an Excel file from OneDrive (by item ID) and return it as a pandas DataFrame."""
     token = get_access_token()
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(url, headers=headers)
     if resp.status_code != 200:
         _handle_graph_error(resp, "download Excel file")
-    # Read Excel content into DataFrame
-    data = resp.content  # bytes of the .xlsx file
     try:
-        df = pd.read_excel(BytesIO(data))
+        df = pd.read_excel(BytesIO(resp.content))
     except Exception as e:
         raise Exception(f"Failed to parse Excel file content: {e}")
     return df
 
 def download_csv_file(drive_id: str, item_id: str) -> pd.DataFrame:
-    """Download a CSV file from OneDrive (by item ID) and return it as a pandas DataFrame."""
     token = get_access_token()
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(url, headers=headers)
     if resp.status_code != 200:
         _handle_graph_error(resp, "download CSV file")
-    # Read CSV content into DataFrame
-    data = resp.content  # bytes of the CSV file
     try:
-        df = pd.read_csv(BytesIO(data))
+        df = pd.read_csv(BytesIO(resp.content))
     except Exception as e:
         raise Exception(f"Failed to parse CSV file content: {e}")
     return df
 
 def update_excel_file(drive_id: str, item_id: str, df: pd.DataFrame) -> None:
-    """Upload a DataFrame to an existing Excel file on OneDrive (replace file content)."""
     token = get_access_token()
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
     headers = {"Authorization": f"Bearer {token}"}
-    # Convert DataFrame to Excel binary
     buffer = BytesIO()
     try:
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
@@ -49,38 +41,39 @@ def update_excel_file(drive_id: str, item_id: str, df: pd.DataFrame) -> None:
     except Exception as e:
         raise Exception(f"Failed to write DataFrame to Excel format: {e}")
     buffer.seek(0)
-    excel_bytes = buffer.read()
-    # PUT the new content to Graph (replace the file)
-    resp = requests.put(url, headers=headers, data=excel_bytes)
+    resp = requests.put(url, headers=headers, data=buffer.read())
     if resp.status_code not in (200, 201):
         _handle_graph_error(resp, "update Excel file")
 
 def upload_csv_file(drive_id: str, path: str, content: bytes) -> str:
-    """Upload a new CSV file to OneDrive at the given path. Returns the new item's ID."""
     token = get_access_token()
-    # Using the root path syntax to upload; this will create or replace the file at the given path
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{path}:/content"
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.put(url, headers=headers, data=content)
-    # Graph API returns 201 Created or 200 OK with the DriveItem JSON if successful
     if resp.status_code not in (200, 201):
         _handle_graph_error(resp, "upload CSV file")
     try:
-        item = resp.json()
+        return resp.json().get("id")
     except ValueError:
-        raise Exception("Upload succeeded but did not return valid JSON response")
-    new_id = item.get("id")
-    if not new_id:
-        raise Exception("Upload succeeded but no item ID returned in response")
-    return new_id
+        raise Exception("Upload succeeded but response is not valid JSON")
+
+def upload_stock_update(df: pd.DataFrame, updates: dict) -> pd.DataFrame:
+    df = df.copy()
+    if "SKU" not in df.columns or "QTY" not in df.columns:
+        raise Exception("Missing SKU or QTY columns in stock file")
+    df.set_index("SKU", inplace=True)
+    for sku, qty_used in updates.items():
+        if sku in df.index:
+            df.at[sku, "QTY"] = max(df.at[sku, "QTY"] - qty_used, 0)
+        else:
+            df.loc[sku] = [0]  # default to zero if not found
+    df.reset_index(inplace=True)
+    return df
 
 def _handle_graph_error(response: requests.Response, action: str):
-    """Helper to raise an exception with details from a failed Graph API response."""
     status = response.status_code
     try:
-        error_json = response.json()
-        # Microsoft Graph errors often have a structure: {"error": {"code": "...", "message": "..."}}
-        message = error_json.get("error", {}).get("message") or error_json.get("error_description")
+        message = response.json().get("error", {}).get("message") or response.text
     except ValueError:
         message = response.text or "Unknown error"
     raise Exception(f"Failed to {action} (HTTP {status}): {message}")
