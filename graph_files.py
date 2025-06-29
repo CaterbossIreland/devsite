@@ -1,90 +1,37 @@
-import requests
 import pandas as pd
 from io import BytesIO
-from graph_auth import get_access_token
+from graph_api_auth import get_graph_client
 
-def download_excel_file(drive_id: str, item_id: str) -> pd.DataFrame:
-    """Download an Excel file from OneDrive (by item ID) and return it as a pandas DataFrame."""
-    token = get_access_token()
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        _handle_graph_error(resp, "download Excel file")
-    try:
-        df = pd.read_excel(BytesIO(resp.content), engine="openpyxl")
-    except Exception as e:
-        raise Exception(f"Failed to parse Excel file content: {e}")
-    return df
+# Define the function to update stock
 
-def download_csv_file(drive_id: str, item_id: str) -> pd.DataFrame:
-    """Download a CSV file from OneDrive (by item ID) and return it as a pandas DataFrame."""
-    token = get_access_token()
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        _handle_graph_error(resp, "download CSV file")
-    try:
-        df = pd.read_csv(BytesIO(resp.content))
-    except Exception as e:
-        raise Exception(f"Failed to parse CSV file content: {e}")
-    return df
+def upload_stock_update(stock_df: pd.DataFrame, items: dict) -> pd.DataFrame:
+    updated_rows = 0
+    for sku, quantity in items.items():
+        match = stock_df[stock_df["SKU"].astype(str).str.strip() == str(sku).strip()]
+        if not match.empty:
+            stock_df.loc[match.index, "QTY"] = quantity
+            updated_rows += 1
+        else:
+            new_row = pd.DataFrame({"SKU": [sku], "QTY": [quantity]})
+            stock_df = pd.concat([stock_df, new_row], ignore_index=True)
+            updated_rows += 1
+    return stock_df
 
-def update_excel_file(drive_id: str, item_id: str, df: pd.DataFrame) -> None:
-    """Upload a DataFrame to an existing Excel file on OneDrive (replace file content)."""
-    token = get_access_token()
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
-    headers = {"Authorization": f"Bearer {token}"}
+
+def download_excel_file(drive_id: str, file_id: str) -> pd.DataFrame:
+    client = get_graph_client()
+    response = client.get(f"/drives/{drive_id}/items/{file_id}/content")
+    if response.status_code != 200:
+        raise Exception("Failed to download Excel file from OneDrive")
+    return pd.read_excel(BytesIO(response.content), engine="openpyxl")
+
+
+def update_excel_file(drive_id: str, file_id: str, df: pd.DataFrame):
+    client = get_graph_client()
     buffer = BytesIO()
-    try:
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False)
-    except Exception as e:
-        raise Exception(f"Failed to write DataFrame to Excel format: {e}")
+    df.to_excel(buffer, index=False, engine="openpyxl")
     buffer.seek(0)
-    resp = requests.put(url, headers=headers, data=buffer.read())
-    if resp.status_code not in (200, 201):
-        _handle_graph_error(resp, "update Excel file")
-
-def upload_csv_file(drive_id: str, path: str, content: bytes) -> str:
-    """Upload a new CSV file to OneDrive at the given path. Returns the new item's ID."""
-    token = get_access_token()
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{path}:/content"
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.put(url, headers=headers, data=content)
-    if resp.status_code not in (200, 201):
-        _handle_graph_error(resp, "upload CSV file")
-    try:
-        item = resp.json()
-    except ValueError:
-        raise Exception("Upload succeeded but did not return valid JSON response")
-    new_id = item.get("id")
-    if not new_id:
-        raise Exception("Upload succeeded but no item ID returned in response")
-    return new_id
-
-def upload_stock_update(stock_df: pd.DataFrame, updates: dict) -> pd.DataFrame:
-    """Update the stock DataFrame by subtracting quantities for given SKUs."""
-    df = stock_df.copy()
-    if 'SKU' not in df.columns or 'QTY' not in df.columns:
-        raise Exception("Stock file must contain 'SKU' and 'QTY' columns")
-
-    df['SKU'] = df['SKU'].astype(str)
-    df['QTY'] = pd.to_numeric(df['QTY'], errors='coerce').fillna(0).astype(int)
-
-    for sku, sub_qty in updates.items():
-        sku_str = str(sku)
-        if sku_str in df['SKU'].values:
-            df.loc[df['SKU'] == sku_str, 'QTY'] = df.loc[df['SKU'] == sku_str, 'QTY'] - sub_qty
-    return df
-
-def _handle_graph_error(response: requests.Response, action: str):
-    """Helper to raise an exception with details from a failed Graph API response."""
-    status = response.status_code
-    try:
-        error_json = response.json()
-        message = error_json.get("error", {}).get("message") or error_json.get("error_description")
-    except ValueError:
-        message = response.text or "Unknown error"
-    raise Exception(f"Failed to {action} (HTTP {status}): {message}")
+    upload_url = f"/drives/{drive_id}/items/{file_id}/content"
+    response = client.put(upload_url, data=buffer.read())
+    if response.status_code not in (200, 201):
+        raise Exception("Failed to upload updated Excel file to OneDrive")
