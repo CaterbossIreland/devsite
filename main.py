@@ -204,3 +204,28 @@ async def check_stock(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stock check failed: {str(e)}")
+# Insert these just before each OneDrive upload block in your existing main.py
+import logging
+
+# Configure logging (prints to Render logs)
+logging.basicConfig(level=logging.INFO)
+
+# After creating nisbets_order_df
+if to_order_nisbets:
+    logging.info("Preparing to upload Nisbets order CSV...")
+    logging.info("Nisbets order DataFrame:\n%s", nisbets_order_df)
+
+# After creating nortons_order_df
+if to_order_nortons:
+    logging.info("Preparing to upload Nortons order CSV...")
+    logging.info("Nortons order DataFrame:\n%s", nortons_order_df)
+
+# Right before uploading updated stock Excel for Nisbets
+logging.info("Uploading updated Nisbets stock file...\nCurrent qty for J242: %s", nisbets_df[nisbets_df['SKU'] == 'J242'])
+
+# Right before uploading updated stock Excel for Nortons
+logging.info("Uploading updated Nortons stock file...\nCurrent qty for J242: %s", nortons_df[nortons_df['SKU'] == 'J242'])
+
+# Also optionally after each upload request:
+logging.info("Upload response status for Nisbets CSV: %s", resp.status_code)
+logging.info("Upload response body: %s", resp.text)
