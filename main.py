@@ -40,7 +40,15 @@ def get_access_token_sync():
         "grant_type": "client_credentials",
     }
     response = requests.post(url, data=data)
+    
+    # NEW DEBUGGING LINE:
+    print("TOKEN RESPONSE:", response.status_code, response.text)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Token request failed: " + response.text)
+
     return response.json()["access_token"]
+
 
 # === Graph API File Fetch ===
 def download_excel_file(item_id: str) -> pd.DataFrame:
