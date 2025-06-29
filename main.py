@@ -1,12 +1,9 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from io import BytesIO
-import os
-import uuid
-import csv
-from docx import Document
+import requests
 
 app = FastAPI()
 
@@ -17,107 +14,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Configuration ===
-OUTPUT_DIR = "downloads"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-SUPPLIER_MAP_PATH = "supplier.csv.csv"
+# --- Hardcoded Graph API Credentials ---
+TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
+CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
+CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 
-# === Helper to standardize columns ===
-def normalize_columns(df):
-    COLUMN_ALIASES = {
-        "ORDER NO": "ORDER",
-        "ORDER NUMBER": "ORDER",
-        "ORDER#": "ORDER",
-        "PRODUCT CODE": "SKU",
-        "ITEM CODE": "SKU",
-        "OFFER SKU": "SKU",
-        "QUANTITY": "QTY",
-        "QTY.": "QTY",
-        "QTY ORDERED": "QTY"
+# OneDrive Supplier CSV Path
+SUPPLIER_FILE_PATH = "/drives/b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAs/items/01WJPVUR37I4YJMIOIRZB3VSDJPAJE7N4C/supplier.csv.csv"
+
+def get_graph_token():
+    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "scope": "https://graph.microsoft.com/.default"
     }
-    df.columns = [COLUMN_ALIASES.get(col.strip().upper(), col.strip().upper()) for col in df.columns]
-    return df
+    r = requests.post(url, data=data)
+    r.raise_for_status()
+    return r.json()["access_token"]
 
-# === Helper to create .docx from grouped SKUs ===
-def create_doc(supplier_name, skus):
-    doc = Document()
-    doc.add_heading(f"Order for {supplier_name}", 0)
-    table = doc.add_table(rows=1, cols=2)
-    hdr_cells = table.rows[0].cells
-    hdr_cells[0].text = 'SKU'
-    hdr_cells[1].text = 'QTY'
-    for item in skus:
-        row = table.add_row().cells
-        row[0].text = item['SKU']
-        row[1].text = str(item['QTY'])
-    filename = f"{supplier_name.replace(' ', '_')}_Orders.docx"
-    path = os.path.join(OUTPUT_DIR, filename)
-    doc.save(path)
-    return filename, path
+def download_supplier_csv():
+    token = get_graph_token()
+    url = f"https://graph.microsoft.com/v1.0/sites/caterboss.sharepoint.com/drive/root:{SUPPLIER_FILE_PATH}:/content"
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return pd.read_csv(BytesIO(r.content))
 
-# === Helper to create CSV checklist for Nisbets ===
-def create_checklist_csv(skus):
-    filename = "Nisbets_Checklist.csv"
-    path = os.path.join(OUTPUT_DIR, filename)
-    with open(path, mode='w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(["SKU", "QTY"])
-        for item in skus:
-            writer.writerow([item['SKU'], item['QTY']])
-    return filename, path
-
-@app.post("/generate_supplier_docs")
-async def generate_supplier_docs(file: UploadFile = File(...)):
+@app.post("/process")
+async def process_order(file: UploadFile = File(...)):
     try:
-        order_data = await file.read()
-        df = pd.read_excel(BytesIO(order_data))
-        df = normalize_columns(df)
+        contents = await file.read()
+        df_orders = pd.read_excel(BytesIO(contents))
+        df_orders['SKU'] = df_orders.iloc[:, 13].astype(str)  # Column N
 
-        if not {"SKU", "QTY"}.issubset(df.columns):
-            raise HTTPException(status_code=400, detail="Missing required columns")
+        df_grouped = df_orders.groupby('SKU').size().reset_index(name='QTY')
+        df_grouped = df_grouped[df_grouped['SKU'].str.strip().str.lower() != 'nan']
 
-        supplier_df = pd.read_csv(SUPPLIER_MAP_PATH)
-        supplier_df.columns = [col.strip().upper() for col in supplier_df.columns]
+        df_suppliers = download_supplier_csv()
 
-        if not {"SKU", "SUPPLIER"}.issubset(supplier_df.columns):
-            raise HTTPException(status_code=400, detail="Supplier map must have SKU and SUPPLIER columns")
+        if not {'SKU', 'SUPPLIER'}.issubset(df_suppliers.columns):
+            return JSONResponse(status_code=400, content={"error": "supplier.csv must contain 'SKU' and 'SUPPLIER' columns"})
 
-        merged = df.merge(supplier_df, how="left", on="SKU")
+        merged = pd.merge(df_grouped, df_suppliers, on='SKU', how='left')
+        unmatched = merged[merged['SUPPLIER'].isna()]
+        matched = merged.dropna(subset=['SUPPLIER'])
 
-        unmatched = merged[merged["SUPPLIER"].isna()][["SKU", "QTY"]].to_dict(orient="records")
+        supplier_dict = {}
+        for supplier in matched['SUPPLIER'].unique():
+            df_supplier = matched[matched['SUPPLIER'] == supplier][['SKU', 'QTY']]
+            supplier_dict[supplier] = df_supplier.to_dict(orient='records')
 
-        matched = merged.dropna(subset=["SUPPLIER"])
-        grouped = matched.groupby("SUPPLIER")
+        nisbets_df = matched[matched['SUPPLIER'].str.lower() == "nisbets"]
+        nisbets_csv = nisbets_df.to_csv(index=False)
 
-        files = []
-        response_preview = {}
-
-        for supplier, group in grouped:
-            skus = group.groupby("SKU")["QTY"].sum().reset_index().to_dict(orient="records")
-            doc_filename, doc_path = create_doc(supplier, skus)
-            files.append({"name": doc_filename, "url": f"/downloads/{doc_filename}"})
-
-            if supplier.lower() == "nisbets":
-                csv_filename, csv_path = create_checklist_csv(skus)
-                files.append({"name": csv_filename, "url": f"/downloads/{csv_filename}"})
-
-            # Include doc preview
-            preview_lines = [f"SKU: {item['SKU']} - QTY: {item['QTY']}" for item in skus]
-            response_preview[supplier] = preview_lines
-
-        return JSONResponse(content={
-            "status": "success",
-            "files": files,
-            "preview": response_preview,
-            "unmatched_skus": unmatched
-        })
+        return {
+            "unmatched_skus": unmatched['SKU'].tolist(),
+            "suppliers": supplier_dict,
+            "nisbets_csv": nisbets_csv
+        }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/downloads/{filename}")
-def download_file(filename: str):
-    file_path = os.path.join(OUTPUT_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
+        return JSONResponse(status_code=500, content={"error": str(e)})
