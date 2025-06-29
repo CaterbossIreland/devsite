@@ -64,6 +64,21 @@ def upload_csv_file(drive_id: str, path: str, content: bytes) -> str:
         raise Exception("Upload succeeded but no item ID returned in response")
     return new_id
 
+def upload_stock_update(stock_df: pd.DataFrame, updates: dict) -> pd.DataFrame:
+    """Update the stock DataFrame by subtracting quantities for given SKUs."""
+    df = stock_df.copy()
+    if 'SKU' not in df.columns or 'QTY' not in df.columns:
+        raise Exception("Stock file must contain 'SKU' and 'QTY' columns")
+
+    df['SKU'] = df['SKU'].astype(str)
+    df['QTY'] = pd.to_numeric(df['QTY'], errors='coerce').fillna(0).astype(int)
+
+    for sku, sub_qty in updates.items():
+        sku_str = str(sku)
+        if sku_str in df['SKU'].values:
+            df.loc[df['SKU'] == sku_str, 'QTY'] = df.loc[df['SKU'] == sku_str, 'QTY'] - sub_qty
+    return df
+
 def _handle_graph_error(response: requests.Response, action: str):
     """Helper to raise an exception with details from a failed Graph API response."""
     status = response.status_code
