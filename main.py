@@ -255,3 +255,5 @@ async def update_stock_from_fulfilled(fulfilled_list: list[dict]):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stock update failed: {str(e)}")
+from routes.generate_supplier_docs import router as supplier_docs_router
+app.include_router(supplier_docs_router)
