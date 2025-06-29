@@ -3,7 +3,6 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import requests
-import os
 from io import BytesIO
 
 from graph_excel import (
@@ -14,7 +13,7 @@ from graph_excel import (
 
 app = FastAPI()
 
-# Optional CORS for browser/API testing
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === ENV & AUTH CONFIG ===
+# === ENV CONFIG ===
 TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
 CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
 CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
@@ -47,13 +46,10 @@ def get_access_token_sync():
         raise HTTPException(status_code=500, detail="Failed to obtain token")
     return response.json()["access_token"]
 
-# === ExcelFileRequest for POST APIs ===
 class ExcelFileRequest(BaseModel):
     site_id: str
     drive_id: str
     item_id: str
-
-# === ROUTES ===
 
 @app.get("/")
 def root():
@@ -74,7 +70,7 @@ def get_sheets():
 def get_stock_data():
     file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
     data = read_sheet_data(file_id)
-    return {"rows": data[:10]}  # limit for test
+    return {"rows": data[:10]}
 
 @app.get("/list_sites")
 def list_sites():
@@ -122,58 +118,57 @@ async def process_orders(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(BytesIO(contents))
 
-       COLUMN_ALIASES = {
-    "ORDER NO": "ORDER",
-    "ORDER NUMBER": "ORDER",
-    "ORDER#": "ORDER",
-
-    "PRODUCT CODE": "SKU",
-    "ITEM CODE": "SKU",
-    "OFFER SKU": "SKU",  # ✅ this is the column in your file
-
-    "QUANTITY": "QTY",
-    "QTY.": "QTY",
-    "QTY ORDERED": "QTY"
-}
-
-
-        REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
-        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip().upper()) for c in df.columns]
-        missing = REQUIRED_COLUMNS - set(df.columns)
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
-        return {"status": "success", "rows": df.shape[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-@app.post("/check_stock")
-async def check_stock(file: UploadFile = File(...)):
-    try:
-        # 1. Read uploaded Excel order file
-        contents = await file.read()
-        df = pd.read_excel(BytesIO(contents))
-
-        # 2. Standardize column names
         COLUMN_ALIASES = {
             "ORDER NO": "ORDER",
             "ORDER NUMBER": "ORDER",
+            "ORDER#": "ORDER",
             "PRODUCT CODE": "SKU",
             "ITEM CODE": "SKU",
+            "OFFER SKU": "SKU",
             "QUANTITY": "QTY",
             "QTY.": "QTY",
-            "QTY ORDERED": "QTY",
-            "ORDER#": "ORDER"
+            "QTY ORDERED": "QTY"
         }
+
         REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
-        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip().upper()) for c in df.columns]
+        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip()) for c in df.columns]
+        df.columns = [c.upper() for c in df.columns]
         missing = REQUIRED_COLUMNS - set(df.columns)
         if missing:
             raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
 
-        # 3. Get live stock data
+        return {"status": "success", "rows": df.shape[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+@app.post("/check_stock")
+async def check_stock(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents))
+
+        COLUMN_ALIASES = {
+            "ORDER NO": "ORDER",
+            "ORDER NUMBER": "ORDER",
+            "ORDER#": "ORDER",
+            "PRODUCT CODE": "SKU",
+            "ITEM CODE": "SKU",
+            "OFFER SKU": "SKU",
+            "QUANTITY": "QTY",
+            "QTY.": "QTY",
+            "QTY ORDERED": "QTY"
+        }
+
+        REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
+        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip()) for c in df.columns]
+        df.columns = [c.upper() for c in df.columns]
+        missing = REQUIRED_COLUMNS - set(df.columns)
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+
         stock_data = read_sheet_data("01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
         stock_df = pd.DataFrame(stock_data)
 
-        # 4. Prepare and join
         order_df = df[["SKU", "QTY"]].copy()
         order_df["SKU"] = order_df["SKU"].astype(str)
         stock_df["SKU"] = stock_df["SKU"].astype(str)
