@@ -118,18 +118,15 @@ async def update_stock(supplier_name: str, items: dict):
 async def generate_docs(file: UploadFile = File(...)):
     try:
         order_df = pd.read_excel(file.file, engine="openpyxl")
-        order_df.columns = [c.strip() for c in order_df.columns]
 
         required_cols = ["Offer SKU", "Order number", "Quantity"]
         for col in required_cols:
             if col not in order_df.columns:
                 raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
 
-        order_df.rename(columns={
-            "Offer SKU": "SKU",
-            "Order number": "ORDER",
-            "Quantity": "QTY",
-        }, inplace=True)
+        order_df["SKU"] = order_df["Offer SKU"].astype(str)
+        order_df["ORDER"] = order_df["Order number"]
+        order_df["QTY"] = order_df["Quantity"]
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["SKU"] = supplier_df["SKU"].astype(str)
@@ -137,7 +134,6 @@ async def generate_docs(file: UploadFile = File(...)):
 
         supplier_map = dict(zip(supplier_df["SKU"], supplier_df["SUPPLIER"]))
 
-        order_df["SKU"] = order_df["SKU"].astype(str)
         order_df["SUPPLIER"] = order_df["SKU"].map(supplier_map)
 
         nisbets_df = order_df[order_df["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
