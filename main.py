@@ -113,7 +113,7 @@ async def update_stock(supplier_name: str, items: dict):
 async def generate_docs(file: UploadFile = File(...)):
     try:
         df = pd.read_excel(file.file, engine="openpyxl")
-        order_df = df.iloc[:, [1, 13, 2]]  # Order number, Offer SKU, Quantity
+        order_df = df.iloc[:, [2, 14, 3]]  # Order number, Offer SKU, Quantity
         order_df.columns = ["Order number", "Offer SKU", "Quantity"]
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
