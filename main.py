@@ -144,7 +144,7 @@ async def generate_docs(file: UploadFile = File(...)):
         # Rename known columns directly (no mapping logic)
         order_df.rename(columns={
             "Offer SKU": "SKU",
-            "Order No": "ORDER",
+            "Order number": "ORDER",
             "Quantity": "QTY"
         }, inplace=True)
 
