@@ -5,27 +5,33 @@ import zipfile
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
-        uploaded_orders = pd.read_excel(BytesIO(await file.read()))
+       uploaded_orders = pd.read_excel(BytesIO(await file.read()))
 
-        # Normalize column names
-        COLUMN_ALIASES = {
-            "ORDER NO": "ORDER",
-            "ORDER NUMBER": "ORDER",
-            "ORDER#": "ORDER",
-            "PRODUCT CODE": "SKU",
-            "ITEM CODE": "SKU",
-            "OFFER SKU": "SKU",
-            "QUANTITY": "QTY",
-            "QTY.": "QTY",
-            "QTY ORDERED": "QTY"
-        }
-        uploaded_orders.columns = [
-            COLUMN_ALIASES.get(col.strip().upper(), col.strip().upper())
-            for col in uploaded_orders.columns
-        ]
+# Debug print for troubleshooting (can be removed later)
+print("Original columns:", list(uploaded_orders.columns))
 
-        if "SKU" not in uploaded_orders.columns or "QTY" not in uploaded_orders.columns:
-            raise HTTPException(status_code=400, detail="400: SKU or QTY column missing in uploaded file")
+# Normalize column names
+COLUMN_ALIASES = {
+    "ORDER NO": "ORDER",
+    "ORDER NUMBER": "ORDER",
+    "ORDER#": "ORDER",
+    "PRODUCT CODE": "SKU",
+    "ITEM CODE": "SKU",
+    "OFFER SKU": "SKU",
+    "QUANTITY": "QTY",
+    "QTY.": "QTY",
+    "QTY ORDERED": "QTY"
+}
+uploaded_orders.columns = [
+    COLUMN_ALIASES.get(col.strip().upper(), col.strip().upper()) 
+    for col in uploaded_orders.columns
+]
+
+# Debug output
+print("Normalized columns:", list(uploaded_orders.columns))
+
+if "SKU" not in uploaded_orders.columns:
+    raise HTTPException(status_code=400, detail="400: SKU column missing in uploaded file")
 
         # Download supplier map
         supplier_df = download_csv_file(SUPPLIER_FILE_ID)
