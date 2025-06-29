@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
 import pandas as pd
 import requests
-import os
 
 app = FastAPI()
 
@@ -18,7 +17,7 @@ app.add_middleware(
 # === Graph API Config ===
 TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
 CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
-CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQqO20BTNU8Qa~i"  # Correct secret you confirmed
+CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQqO20BTNU8Qa~i"  # Correct secret
 
 SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
 DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
@@ -71,6 +70,7 @@ def upload_to_onedrive(filename: str, df: pd.DataFrame):
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
+    from io import BytesIO
     with BytesIO() as output:
         df.to_excel(output, index=False)
         output.seek(0)
@@ -84,29 +84,26 @@ async def generate_docs(file: UploadFile = File(...)):
     try:
         uploaded_orders = pd.read_excel(BytesIO(await file.read()))
 
-        # Case-insensitive mapping of SKU column aliases
+        # Map SKU column case-insensitively, prioritizing 'Offer SKU'
         COLUMN_ALIASES = {
+            "offer sku": "SKU",
             "product code": "SKU",
             "item code": "SKU",
-            "offer sku": "SKU",
             "sku": "SKU",
         }
-
         normalized_cols = {col.lower(): col for col in uploaded_orders.columns}
 
         sku_col_original = None
-        for alias_lower in COLUMN_ALIASES.keys():
+        for alias_lower in COLUMN_ALIASES:
             if alias_lower in normalized_cols:
                 sku_col_original = normalized_cols[alias_lower]
                 break
-
         if not sku_col_original:
-            raise HTTPException(status_code=400, detail="None of ['SKU'] columns found in upload")
+            raise HTTPException(status_code=400, detail="SKU column missing in uploaded file")
 
-        # Rename the identified SKU column to standard 'SKU'
         uploaded_orders.rename(columns={sku_col_original: "SKU"}, inplace=True)
 
-        # Also normalize QTY column similarly (common aliases)
+        # Handle QTY similarly with common aliases (case-insensitive)
         QTY_ALIASES = ["quantity", "qty", "qty ordered", "q.ty", "q.ty ordered"]
         qty_col_original = None
         for alias in QTY_ALIASES:
@@ -114,7 +111,7 @@ async def generate_docs(file: UploadFile = File(...)):
                 qty_col_original = normalized_cols[alias]
                 break
         if not qty_col_original:
-            raise HTTPException(status_code=400, detail="Quantity column not found in upload")
+            raise HTTPException(status_code=400, detail="Quantity column missing in uploaded file")
 
         uploaded_orders.rename(columns={qty_col_original: "QTY"}, inplace=True)
 
@@ -135,12 +132,13 @@ async def generate_docs(file: UploadFile = File(...)):
                     supplier_orders[supplier] = []
                 supplier_orders[supplier].append(row)
 
-        # Optionally upload supplier orders back to OneDrive or return them here
+        # Upload generated supplier order files to OneDrive
         for supplier, rows in supplier_orders.items():
-            supplier_df = pd.DataFrame(rows)
+            df = pd.DataFrame(rows)
             filename = f"{supplier}_order_list.xlsx"
-            upload_to_onedrive(filename, supplier_df)
+            upload_to_onedrive(filename, df)
 
         return {"message": "Supplier order files generated and uploaded."}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
