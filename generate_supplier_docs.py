@@ -5,18 +5,17 @@ from docx import Document
 from io import BytesIO
 import zipfile
 import os
-from datetime import datetime
 
 router = APIRouter()
 
-SUPPLIER_MAP_PATH = "Supplier.csv"
+SUPPLIER_MAP_PATH = "Supplier.csv"  # ✅ updated to match current filename
 TEMP_DIR = "/mnt/data/supplier_docs"
 ZIP_PATH = os.path.join(TEMP_DIR, "supplier_outputs.zip")
 
 @router.post("/generate_supplier_docs")
 async def generate_supplier_docs(file: UploadFile = File(...)):
     try:
-        # 1. Load uploaded order Excel file
+        # 1. Load order Excel file
         order_bytes = await file.read()
         order_df = pd.read_excel(BytesIO(order_bytes))
 
@@ -43,14 +42,14 @@ async def generate_supplier_docs(file: UploadFile = File(...)):
         supplier_df = pd.read_csv(SUPPLIER_MAP_PATH)
         supplier_lookup = dict(zip(supplier_df['Supplier SKU'], supplier_df['Supplier Name']))
 
-        # 4. Split orders by supplier
+        # 4. Split orders
         supplier_orders = {}
         unmatched = []
         for entry in orders:
             sku = str(entry['SKU']).strip()
             try:
                 qty = int(entry['QTY'])
-            except:
+            except ValueError:
                 continue
             supplier = supplier_lookup.get(sku)
             if supplier:
@@ -61,11 +60,30 @@ async def generate_supplier_docs(file: UploadFile = File(...)):
         # 5. Generate output docs
         os.makedirs(TEMP_DIR, exist_ok=True)
         output_files = []
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
         for supplier, items in supplier_orders.items():
             doc = Document()
             doc.add_heading(f"{supplier} Order", level=1)
             for item in items:
                 doc.add_paragraph(f"SKU: {item['SKU']} — QTY: {item['QTY']}")
-            path = os.path.join(TEMP_DIR, f_
+            path = os.path.join(TEMP_DIR, f"{supplier}_Orders.docx")
+            doc.save(path)
+            output_files.append(path)
+
+        if supplier_orders.get("Nisbets"):
+            checklist_path = os.path.join(TEMP_DIR, "Nisbets_Checklist.csv")
+            pd.DataFrame(supplier_orders["Nisbets"]).to_csv(checklist_path, index=False)
+            output_files.append(checklist_path)
+
+        # 6. Zip all
+        with zipfile.ZipFile(ZIP_PATH, "w") as zipf:
+            for f in output_files:
+                zipf.write(f, os.path.basename(f))
+
+        return {
+            "zip_file": ZIP_PATH,
+            "unmatched_skus": unmatched
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process: {str(e)}")
