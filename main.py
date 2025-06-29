@@ -11,6 +11,11 @@ CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAs"
 NISBETS_STOCK_FILE_ID = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
 NORTONS_STOCK_FILE_ID = "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"
+SUPPLIER_FILE_ID = "01YTGSV57KLMNOPQR23456789EXAMPLEREFID"
+STOCK_FILE_IDS = {
+    "nisbets": NISBETS_STOCK_FILE_ID,
+    "nortons": NORTONS_STOCK_FILE_ID,
+}
 
 # === FASTAPI APP ===
 app = FastAPI()
@@ -52,6 +57,14 @@ def download_excel_file(drive_id: str, item_id: str) -> pd.DataFrame:
         raise Exception(f"Failed to download Excel file: {resp.text}")
     return pd.read_excel(BytesIO(resp.content), engine="openpyxl")
 
+def download_csv_file(drive_id: str, item_id: str) -> pd.DataFrame:
+    session, headers = get_graph_client()
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
+    resp = session.get(url, headers=headers)
+    if resp.status_code != 200:
+        raise Exception(f"Failed to download CSV file: {resp.text}")
+    return pd.read_csv(BytesIO(resp.content))
+
 def update_excel_file(drive_id: str, item_id: str, df: pd.DataFrame):
     session, headers = get_graph_client()
     buffer = BytesIO()
@@ -70,14 +83,6 @@ def upload_csv_to_onedrive(drive_id: str, path: str, content: bytes) -> str:
         raise Exception(f"Failed to upload CSV: {resp.text}")
     return resp.json().get("id")
 
-def read_sheet_data(drive_id: str, item_id: str, sheet_name: str) -> list:
-    session, headers = get_graph_client()
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook/worksheets('{sheet_name}')/usedRange"
-    resp = session.get(url, headers=headers)
-    if resp.status_code != 200:
-        raise Exception(f"Failed to read sheet range: {resp.text}")
-    return resp.json().get("values", [])
-
 def upload_stock_update(stock_df: pd.DataFrame, items: dict) -> pd.DataFrame:
     updated_rows = 0
     for sku, quantity in items.items():
@@ -91,21 +96,44 @@ def upload_stock_update(stock_df: pd.DataFrame, items: dict) -> pd.DataFrame:
             updated_rows += 1
     return stock_df
 
-# === API ENDPOINT ===
+# === API: Update Stock ===
 @app.post("/update-stock/")
 async def update_stock(supplier_name: str, items: dict):
     try:
-        if supplier_name.lower() == "nisbets":
-            stock_file_id = NISBETS_STOCK_FILE_ID
-        elif supplier_name.lower() == "nortons":
-            stock_file_id = NORTONS_STOCK_FILE_ID
-        else:
+        supplier_name = supplier_name.lower()
+        if supplier_name not in STOCK_FILE_IDS:
             raise HTTPException(status_code=400, detail="Unknown supplier name")
 
+        stock_file_id = STOCK_FILE_IDS[supplier_name]
         stock_df = download_excel_file(DRIVE_ID, stock_file_id)
         updated_stock_df = upload_stock_update(stock_df, items)
         update_excel_file(DRIVE_ID, stock_file_id, updated_stock_df)
 
         return {"success": True, "updated": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# === API: Generate Supplier Docs ===
+@app.post("/generate-docs/")
+async def generate_docs(file: UploadFile = File(...)):
+    try:
+        order_df = pd.read_excel(file.file, engine="openpyxl")
+        supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
+
+        supplier_map = dict(zip(supplier_df["SKU"].astype(str), supplier_df["SUPPLIER"].str.lower()))
+        order_df["SKU"] = order_df["SKU"].astype(str)
+        order_df["SUPPLIER"] = order_df["SKU"].map(supplier_map)
+
+        nisbets_df = order_df[order_df["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
+        nortons_df = order_df[order_df["SUPPLIER"] == "nortons"][["ORDER", "SKU", "QTY"]]
+
+        nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
+        upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
+
+        return {
+            "nisbets_rows": len(nisbets_df),
+            "nortons_rows": len(nortons_df),
+            "status": "Supplier docs created"
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
