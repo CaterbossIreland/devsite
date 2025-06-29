@@ -4,9 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import requests
 from io import BytesIO
+import logging
 
-from graph_excel import download_excel_file  # ✅ Just import what exists
-
+from graph_excel import download_excel_file, read_sheet_data, upload_stock_update, upload_csv_to_onedrive
+from supplier_logic import identify_supplier
 
 app = FastAPI()
 
@@ -25,11 +26,16 @@ CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
 SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
 DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
 STOCK_FILE_IDS = [
-    "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX",
-    "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"
+    "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX",  # Nortons
+    "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"   # Nisbets
 ]
+SUPPLIER_FILE_ID = "01YTGSV5CKQF4CMEH5GZC2GFF5VMIWBP3B"
 
-# === AUTH ===
+# Logging
+logging.basicConfig(level=logging.INFO)
+
+# Auth
+
 def get_access_token_sync():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
@@ -43,6 +49,8 @@ def get_access_token_sync():
         raise HTTPException(status_code=500, detail="Failed to obtain token")
     return response.json()["access_token"]
 
+# Models
+
 class ExcelFileRequest(BaseModel):
     site_id: str
     drive_id: str
@@ -52,69 +60,13 @@ class ExcelFileRequest(BaseModel):
 def root():
     return {"message": "Server is up and running."}
 
-@app.get("/get-file-id")
-def get_file_id():
-    file_id = get_excel_file_metadata()
-    return {"file_id": file_id}
-
-@app.get("/sheets")
-def get_sheets():
-    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
-    sheets = list_excel_sheets(file_id)
-    return {"sheets": sheets}
-
-@app.get("/stock-data")
-def get_stock_data():
-    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
-    data = read_sheet_data(file_id)
-    return {"rows": data[:10]}
-
-@app.get("/list_sites")
-def list_sites():
-    token = get_access_token_sync()
-    url = "https://graph.microsoft.com/v1.0/sites?search=*"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.get("/list_drives")
-def list_drives():
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.get("/list_files")
-def list_files():
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root/children"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.post("/read_excel")
-def read_excel(request: ExcelFileRequest):
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{request.site_id}/drives/{request.drive_id}/items/{request.item_id}/workbook/worksheets"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.post("/write_excel")
-def write_excel(request: ExcelFileRequest):
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{request.site_id}/drives/{request.drive_id}/items/{request.item_id}/workbook/worksheets('Sheet1')/range(address='A1')"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    data = {"values": [["Updated by FastAPI!"]]}
-    response = requests.patch(url, headers=headers, json=data)
-    return {"message": "Cell A1 updated"}
-
 @app.post("/process_orders")
 async def process_orders(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         df = pd.read_excel(BytesIO(contents))
 
+        # Standardize column names
         COLUMN_ALIASES = {
             "ORDER NO": "ORDER",
             "ORDER NUMBER": "ORDER",
@@ -127,105 +79,72 @@ async def process_orders(file: UploadFile = File(...)):
             "QTY ORDERED": "QTY"
         }
 
-        REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
-        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip()) for c in df.columns]
-        df.columns = [c.upper() for c in df.columns]
-        missing = REQUIRED_COLUMNS - set(df.columns)
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip().upper()) for c in df.columns]
+        required = {"ORDER", "SKU", "QTY"}
+        if not required.issubset(set(df.columns)):
+            raise HTTPException(status_code=400, detail="Missing columns")
 
-        return {"status": "success", "rows": df.shape[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        supplier_map = read_sheet_data(SUPPLIER_FILE_ID)
+        supplier_df = pd.DataFrame(supplier_map)
+        supplier_df.columns = [c.upper() for c in supplier_df.columns]
+        supplier_df = supplier_df.rename(columns={"SUPPLIER NAME": "SUPPLIER", "SUPPLIER SKU": "SKU"})
 
-@app.post("/check_stock")
-async def check_stock(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        df = pd.read_excel(BytesIO(contents))
+        df = df.merge(supplier_df, on="SKU", how="left")
 
-        COLUMN_ALIASES = {
-            "ORDER NO": "ORDER",
-            "ORDER NUMBER": "ORDER",
-            "ORDER#": "ORDER",
-            "PRODUCT CODE": "SKU",
-            "ITEM CODE": "SKU",
-            "OFFER SKU": "SKU",
-            "QUANTITY": "QTY",
-            "QTY.": "QTY",
-            "QTY ORDERED": "QTY"
-        }
+        stock_nortons = pd.DataFrame(read_sheet_data(STOCK_FILE_IDS[0]))
+        stock_nisbets = pd.DataFrame(read_sheet_data(STOCK_FILE_IDS[1]))
+        stock_nortons.columns = stock_nisbets.columns = ["SKU", "QTY"]
 
-        REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
-        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip()) for c in df.columns]
-        df.columns = [c.upper() for c in df.columns]
-        missing = REQUIRED_COLUMNS - set(df.columns)
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+        df_grouped = df.groupby(["SUPPLIER", "SKU"]).agg({"QTY": "sum"}).reset_index()
 
-        stock_data = read_sheet_data("01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
-        stock_df = pd.DataFrame(stock_data)
+        to_order_nortons = []
+        to_order_nisbets = []
+        nisbets_df = stock_nisbets.copy()
+        nortons_df = stock_nortons.copy()
 
-        order_df = df[["SKU", "QTY"]].copy()
-        order_df["SKU"] = order_df["SKU"].astype(str)
-        stock_df["SKU"] = stock_df["SKU"].astype(str)
-        stock_df["QTY"] = pd.to_numeric(stock_df["QTY"], errors="coerce").fillna(0).astype(int)
-
-        merged = order_df.groupby("SKU").sum().reset_index()
-        merged = merged.merge(stock_df, how="left", on="SKU", suffixes=("_ordered", "_stock"))
-        merged["QTY_stock"] = merged["QTY_stock"].fillna(0).astype(int)
-
-        merged["FULFILLED"] = merged[["QTY_ordered", "QTY_stock"]].min(axis=1)
-        merged["TO_ORDER"] = merged["QTY_ordered"] - merged["FULFILLED"]
-
-        fulfilled = []
-        to_order = []
-
-        for _, row in merged.iterrows():
-            if row["FULFILLED"] > 0:
-                fulfilled.append({
-                    "SKU": row["SKU"],
-                    "ordered": int(row["QTY_ordered"]),
-                    "stock_before": int(row["QTY_stock"]),
-                    "fulfilled": int(row["FULFILLED"]),
-                    "stock_after": int(row["QTY_stock"] - row["FULFILLED"])
+        for _, row in df_grouped.iterrows():
+            supplier, sku, qty = row["SUPPLIER"], row["SKU"], int(row["QTY"])
+            if pd.isna(supplier):
+                continue
+            target_df = nisbets_df if supplier.lower() == "nisbets" else nortons_df
+            match = target_df[target_df["SKU"] == sku]
+            stock_qty = int(match["QTY"].values[0]) if not match.empty else 0
+            to_fulfill = max(0, qty - stock_qty)
+            if to_fulfill > 0:
+                (to_order_nisbets if supplier.lower() == "nisbets" else to_order_nortons).append({
+                    "SKU": sku, "QTY": to_fulfill
                 })
-            if row["TO_ORDER"] > 0:
-                to_order.append({
-                    "SKU": row["SKU"],
-                    "ordered": int(row["QTY_ordered"]),
-                    "fulfilled": int(row["FULFILLED"])
-                })
+                # Update stock
+                if not match.empty:
+                    target_df.loc[target_df["SKU"] == sku, "QTY"] = stock_qty - (qty - to_fulfill)
+                else:
+                    target_df = pd.concat([target_df, pd.DataFrame([[sku, 0]], columns=["SKU", "QTY"])])
+
+        # Prepare files
+        if to_order_nisbets:
+            nisbets_order_df = pd.DataFrame(to_order_nisbets)
+            logging.info("Preparing to upload Nisbets order CSV...")
+            logging.info("Nisbets order DataFrame:\n%s", nisbets_order_df)
+            upload_csv_to_onedrive(nisbets_order_df, "nisbets_order.csv")
+
+        if to_order_nortons:
+            nortons_order_df = pd.DataFrame(to_order_nortons)
+            logging.info("Preparing to upload Nortons order CSV...")
+            logging.info("Nortons order DataFrame:\n%s", nortons_order_df)
+            upload_csv_to_onedrive(nortons_order_df, "nortons_order.csv")
+
+        # Upload stock
+        logging.info("Uploading updated Nisbets stock file...\nCurrent qty for J242: %s", nisbets_df[nisbets_df['SKU'] == 'J242'])
+        upload_stock_update(nisbets_df, STOCK_FILE_IDS[1])
+
+        logging.info("Uploading updated Nortons stock file...\nCurrent qty for J242: %s", nortons_df[nortons_df['SKU'] == 'J242'])
+        upload_stock_update(nortons_df, STOCK_FILE_IDS[0])
 
         return {
-            "fulfilled_from_stock": fulfilled,
-            "to_order_from_supplier": to_order
+            "nisbets": to_order_nisbets,
+            "nortons": to_order_nortons
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Stock check failed: {str(e)}")
-# Insert these just before each OneDrive upload block in your existing main.py
-import logging
-
-# Configure logging (prints to Render logs)
-logging.basicConfig(level=logging.INFO)
-
-# After creating nisbets_order_df
-if to_order_nisbets:
-    logging.info("Preparing to upload Nisbets order CSV...")
-    logging.info("Nisbets order DataFrame:\n%s", nisbets_order_df)
-
-# After creating nortons_order_df
-if to_order_nortons:
-    logging.info("Preparing to upload Nortons order CSV...")
-    logging.info("Nortons order DataFrame:\n%s", nortons_order_df)
-
-# Right before uploading updated stock Excel for Nisbets
-logging.info("Uploading updated Nisbets stock file...\nCurrent qty for J242: %s", nisbets_df[nisbets_df['SKU'] == 'J242'])
-
-# Right before uploading updated stock Excel for Nortons
-logging.info("Uploading updated Nortons stock file...\nCurrent qty for J242: %s", nortons_df[nortons_df['SKU'] == 'J242'])
-
-# Also optionally after each upload request:
-logging.info("Upload response status for Nisbets CSV: %s", resp.status_code)
-logging.info("Upload response body: %s", resp.text)
+        logging.exception("Error in /process_orders")
+        raise HTTPException(status_code=500, detail=str(e))
