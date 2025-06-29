@@ -199,3 +199,10 @@ def root():
 def get_file_id():
     file_id = get_excel_file_metadata()
     return {"file_id": file_id}
+from graph_excel import list_excel_sheets
+
+@app.get("/sheets")
+def get_sheets():
+    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
+    sheets = list_excel_sheets(file_id)
+    return {"sheets": sheets}
