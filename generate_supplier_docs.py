@@ -5,32 +5,37 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 import os
 import zipfile
-from main import app, download_excel_file, download_csv_file, STOCK_FILE_IDS, SUPPLIER_FILE_ID
+from main import download_excel_file, download_csv_file, STOCK_FILE_IDS, SUPPLIER_FILE_ID
+
+# Aliases for SKU detection
+COLUMN_ALIASES = {
+    "ORDER NO": "ORDER",
+    "ORDER NUMBER": "ORDER",
+    "ORDER#": "ORDER",
+    "PRODUCT CODE": "SKU",
+    "ITEM CODE": "SKU",
+    "OFFER SKU": "SKU"
+}
+
+QTY_ALIASES = ["QUANTITY", "QTY", "QTY.", "QTY ORDERED"]
 
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
         uploaded_orders = pd.read_excel(BytesIO(await file.read()))
 
-        COLUMN_ALIASES = {
-            "ORDER NO": "ORDER",
-            "ORDER NUMBER": "ORDER",
-            "ORDER#": "ORDER",
-            "PRODUCT CODE": "SKU",
-            "ITEM CODE": "SKU",
-            "OFFER SKU": "SKU",
-            "QUANTITY": "QTY",
-            "QTY.": "QTY",
-            "QTY ORDERED": "QTY"
-        }
+        # Normalize columns for detection
+        normalized_columns = {col.strip().upper(): col for col in uploaded_orders.columns}
 
-        uploaded_orders.columns = [
-            COLUMN_ALIASES.get(col.strip().upper(), col.strip().upper())
-            for col in uploaded_orders.columns
-        ]
+        # Detect SKU column alias
+        sku_col = next((normalized_columns.get(alias) for alias in COLUMN_ALIASES if alias in normalized_columns), None)
+        qty_col = next((normalized_columns.get(alias) for alias in QTY_ALIASES if alias in normalized_columns), None)
 
-        if "SKU" not in uploaded_orders.columns or "QTY" not in uploaded_orders.columns:
+        if not sku_col or not qty_col:
             raise HTTPException(status_code=400, detail="400: SKU or QTY column missing in uploaded file")
+
+        # Rename detected columns for consistent downstream use
+        uploaded_orders.rename(columns={sku_col: "SKU", qty_col: "QTY"}, inplace=True)
 
         supplier_df = download_csv_file(SUPPLIER_FILE_ID)
         supplier_map = supplier_df.set_index("SKU")["Supplier"].to_dict()
