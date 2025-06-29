@@ -141,3 +141,70 @@ async def process_orders(file: UploadFile = File(...)):
         return {"status": "success", "rows": df.shape[0]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+@app.post("/check_stock")
+async def check_stock(file: UploadFile = File(...)):
+    try:
+        # 1. Read uploaded Excel order file
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents))
+
+        # 2. Standardize column names
+        COLUMN_ALIASES = {
+            "ORDER NO": "ORDER",
+            "ORDER NUMBER": "ORDER",
+            "PRODUCT CODE": "SKU",
+            "ITEM CODE": "SKU",
+            "QUANTITY": "QTY",
+            "QTY.": "QTY",
+            "QTY ORDERED": "QTY",
+            "ORDER#": "ORDER"
+        }
+        REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
+        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip().upper()) for c in df.columns]
+        missing = REQUIRED_COLUMNS - set(df.columns)
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+
+        # 3. Get live stock data
+        stock_data = read_sheet_data("01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
+        stock_df = pd.DataFrame(stock_data)
+
+        # 4. Prepare and join
+        order_df = df[["SKU", "QTY"]].copy()
+        order_df["SKU"] = order_df["SKU"].astype(str)
+        stock_df["SKU"] = stock_df["SKU"].astype(str)
+        stock_df["QTY"] = pd.to_numeric(stock_df["QTY"], errors="coerce").fillna(0).astype(int)
+
+        merged = order_df.groupby("SKU").sum().reset_index()
+        merged = merged.merge(stock_df, how="left", on="SKU", suffixes=("_ordered", "_stock"))
+        merged["QTY_stock"] = merged["QTY_stock"].fillna(0).astype(int)
+
+        merged["FULFILLED"] = merged[["QTY_ordered", "QTY_stock"]].min(axis=1)
+        merged["TO_ORDER"] = merged["QTY_ordered"] - merged["FULFILLED"]
+
+        fulfilled = []
+        to_order = []
+
+        for _, row in merged.iterrows():
+            if row["FULFILLED"] > 0:
+                fulfilled.append({
+                    "SKU": row["SKU"],
+                    "ordered": int(row["QTY_ordered"]),
+                    "stock_before": int(row["QTY_stock"]),
+                    "fulfilled": int(row["FULFILLED"]),
+                    "stock_after": int(row["QTY_stock"] - row["FULFILLED"])
+                })
+            if row["TO_ORDER"] > 0:
+                to_order.append({
+                    "SKU": row["SKU"],
+                    "ordered": int(row["QTY_ordered"]),
+                    "fulfilled": int(row["FULFILLED"])
+                })
+
+        return {
+            "fulfilled_from_stock": fulfilled,
+            "to_order_from_supplier": to_order
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stock check failed: {str(e)}")
