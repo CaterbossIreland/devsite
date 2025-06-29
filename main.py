@@ -112,20 +112,9 @@ async def update_stock(supplier_name: str, items: dict):
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
-        order_df = pd.read_excel(file.file, engine="openpyxl")
-        order_df.columns = (
-            order_df.columns
-            .str.replace("\u00a0", " ", regex=False)
-            .str.encode("ascii", "ignore").str.decode("ascii")
-            .str.strip()
-        )
-
-        required_cols = ["Offer SKU", "Order number", "Quantity"]
-        missing_cols = [col for col in required_cols if col not in order_df.columns]
-        if missing_cols:
-            raise HTTPException(status_code=400, detail=f"Missing required column(s): {', '.join(missing_cols)}. Found columns: {order_df.columns.tolist()}")
-
-        order_df["Offer SKU"] = order_df["Offer SKU"].astype(str).fillna("").str.strip()
+        df = pd.read_excel(file.file, engine="openpyxl")
+        order_df = df.iloc[:, [1, 13, 2]]  # Order number, Offer SKU, Quantity
+        order_df.columns = ["Order number", "Offer SKU", "Quantity"]
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["Offer SKU"] = supplier_df["Offer SKU"].astype(str).str.strip()
