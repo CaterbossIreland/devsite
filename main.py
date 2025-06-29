@@ -83,12 +83,12 @@ def upload_csv_to_onedrive(drive_id: str, path: str, content: bytes) -> str:
 def upload_stock_update(stock_df: pd.DataFrame, items: dict) -> pd.DataFrame:
     updated_rows = 0
     for sku, quantity in items.items():
-        match = stock_df[stock_df["SKU"].astype(str).str.strip() == str(sku).strip()]
+        match = stock_df[stock_df["Offer SKU"].astype(str).str.strip() == str(sku).strip()]
         if not match.empty:
-            stock_df.loc[match.index, "QTY"] = quantity
+            stock_df.loc[match.index, "Quantity"] = quantity
             updated_rows += 1
         else:
-            new_row = pd.DataFrame({"SKU": [sku], "QTY": [quantity]})
+            new_row = pd.DataFrame({"Offer SKU": [sku], "Quantity": [quantity]})
             stock_df = pd.concat([stock_df, new_row], ignore_index=True)
             updated_rows += 1
     return stock_df
@@ -121,24 +121,15 @@ async def generate_docs(file: UploadFile = File(...)):
 
         order_df["Offer SKU"] = order_df["Offer SKU"].astype(str).fillna("").str.strip()
 
-        if "SKU" not in order_df.columns:
-            order_df.insert(loc=0, column="SKU", value=order_df["Offer SKU"])
-
-        if "SKU" not in order_df.columns:
-            raise HTTPException(status_code=500, detail="SKU column creation failed")
-
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
-        supplier_df["SKU"] = supplier_df["SKU"].astype(str).str.strip()
-        supplier_df["SUPPLIER"] = supplier_df["SUPPLIER"].str.lower()
-        supplier_map = dict(zip(supplier_df["SKU"], supplier_df["SUPPLIER"]))
+        supplier_df["Offer SKU"] = supplier_df["Offer SKU"].astype(str).str.strip()
+        supplier_df["Supplier Name"] = supplier_df["Supplier Name"].str.lower()
+        supplier_map = dict(zip(supplier_df["Offer SKU"], supplier_df["Supplier Name"]))
 
-        order_df["SUPPLIER"] = order_df["SKU"].map(supplier_map)
+        order_df["Supplier Name"] = order_df["Offer SKU"].map(supplier_map)
 
-        supplier_data = order_df[["Order number", "Offer SKU", "Quantity", "SUPPLIER"]].copy()
-        supplier_data.columns = ["ORDER", "SKU", "QTY", "SUPPLIER"]
-
-        nisbets_df = supplier_data[supplier_data["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
-        nortons_df = supplier_data[supplier_data["SUPPLIER"] == "nortons"]["ORDER", "SKU", "QTY"]
+        nisbets_df = order_df[order_df["Supplier Name"] == "nisbets"][["Order number", "Offer SKU", "Quantity"]]
+        nortons_df = order_df[order_df["Supplier Name"] == "nortons"]["Order number", "Offer SKU", "Quantity"]
 
         nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
         upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
