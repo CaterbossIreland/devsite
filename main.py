@@ -8,7 +8,7 @@ from io import BytesIO
 TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
 CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
 CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
-DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
+DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAs"
 NISBETS_STOCK_FILE_ID = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
 NORTONS_STOCK_FILE_ID = "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"
 SUPPLIER_FILE_ID = "01YTGSV5ALH67IM5W73JDJ422J6AOUCC6M"
@@ -96,6 +96,24 @@ def upload_stock_update(stock_df: pd.DataFrame, items: dict) -> pd.DataFrame:
             updated_rows += 1
     return stock_df
 
+# === COLUMN NORMALIZATION ===
+COLUMN_ALIASES = {
+    "PRODUCT CODE": "SKU",
+    "ITEM CODE": "SKU",
+    "OFFER SKU": "SKU",
+    "ORDER NO": "ORDER",
+    "ORDER NUMBER": "ORDER",
+    "ORDER#": "ORDER",
+    "QUANTITY": "QTY",
+    "QTY.": "QTY",
+    "QTY ORDERED": "QTY",
+}
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = [col.strip().upper() for col in df.columns]
+    df.rename(columns={col: COLUMN_ALIASES.get(col, col) for col in df.columns}, inplace=True)
+    return df
+
 # === API: Update Stock ===
 @app.post("/update-stock/")
 async def update_stock(supplier_name: str, items: dict):
@@ -106,6 +124,7 @@ async def update_stock(supplier_name: str, items: dict):
 
         stock_file_id = STOCK_FILE_IDS[supplier_name]
         stock_df = download_excel_file(DRIVE_ID, stock_file_id)
+        stock_df = normalize_columns(stock_df)
         updated_stock_df = upload_stock_update(stock_df, items)
         update_excel_file(DRIVE_ID, stock_file_id, updated_stock_df)
 
@@ -118,7 +137,10 @@ async def update_stock(supplier_name: str, items: dict):
 async def generate_docs(file: UploadFile = File(...)):
     try:
         order_df = pd.read_excel(file.file, engine="openpyxl")
+        order_df = normalize_columns(order_df)
+
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
+        supplier_df = normalize_columns(supplier_df)
 
         supplier_map = dict(zip(supplier_df["SKU"].astype(str), supplier_df["SUPPLIER"].str.lower()))
         order_df["SKU"] = order_df["SKU"].astype(str)
@@ -137,6 +159,8 @@ async def generate_docs(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# === TEST ENDPOINT ===
 @app.get("/test")
 def test():
     return {"status": "ok"}
