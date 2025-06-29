@@ -119,10 +119,16 @@ async def generate_docs(file: UploadFile = File(...)):
         if missing_cols:
             raise HTTPException(status_code=400, detail=f"Missing required column(s): {', '.join(missing_cols)}. Found columns: {', '.join(order_df.columns)}")
 
-        order_df.insert(loc=0, column="SKU", value=order_df["Offer SKU"].astype(str))
+        order_df["Offer SKU"] = order_df["Offer SKU"].astype(str).fillna("").str.strip()
+
+        if "SKU" not in order_df.columns:
+            order_df.insert(loc=0, column="SKU", value=order_df["Offer SKU"])
+
+        if "SKU" not in order_df.columns:
+            raise HTTPException(status_code=500, detail="SKU column creation failed")
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
-        supplier_df["SKU"] = supplier_df["SKU"].astype(str)
+        supplier_df["SKU"] = supplier_df["SKU"].astype(str).str.strip()
         supplier_df["SUPPLIER"] = supplier_df["SUPPLIER"].str.lower()
         supplier_map = dict(zip(supplier_df["SKU"], supplier_df["SUPPLIER"]))
 
@@ -132,7 +138,7 @@ async def generate_docs(file: UploadFile = File(...)):
         supplier_data.columns = ["ORDER", "SKU", "QTY", "SUPPLIER"]
 
         nisbets_df = supplier_data[supplier_data["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
-        nortons_df = supplier_data[supplier_data["SUPPLIER"] == "nortons"][["ORDER", "SKU", "QTY"]]
+        nortons_df = supplier_data[supplier_data["SUPPLIER"] == "nortons"]["ORDER", "SKU", "QTY"]
 
         nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
         upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
