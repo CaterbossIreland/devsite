@@ -40,7 +40,14 @@ def get_access_token_sync():
         "grant_type": "client_credentials",
     }
     response = requests.post(url, data=data)
-    return response.json()["access_token"]
+    try:
+        token = response.json().get("access_token")
+        if not token:
+            raise ValueError(f"Token missing. Raw response: {response.text}")
+        return token
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # === Graph API File Fetch ===
 def download_excel_file(item_id: str) -> pd.DataFrame:
