@@ -87,7 +87,7 @@ def upload_csv_to_onedrive(drive_id: str, path: str, content: bytes) -> str:
 COLUMN_ALIASES = {
     "PRODUCT CODE": "SKU",
     "ITEM CODE": "SKU",
-    "OFFER SKU": "SKU",
+    "Offer SKU": "SKU",
     "OFFER_SKU": "SKU",
     "ORDER NO": "ORDER",
     "ORDER NUMBER": "ORDER",
