@@ -48,7 +48,7 @@ def get_graph_client():
     }
     return requests.Session(), headers
 
-# === GRAPH HELPERS ===
+# === FILE OPS ===
 def download_excel_file(drive_id: str, item_id: str) -> pd.DataFrame:
     session, headers = get_graph_client()
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
@@ -65,6 +65,14 @@ def download_csv_file(drive_id: str, item_id: str) -> pd.DataFrame:
         raise Exception(f"Failed to download CSV file: {resp.text}")
     return pd.read_csv(BytesIO(resp.content))
 
+def upload_csv_to_onedrive(drive_id: str, path: str, content: bytes) -> str:
+    session, headers = get_graph_client()
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{path}:/content"
+    resp = session.put(url, headers={"Authorization": headers["Authorization"]}, data=content)
+    if resp.status_code not in (200, 201):
+        raise Exception(f"Failed to upload CSV: {resp.text}")
+    return resp.json().get("id")
+
 def update_excel_file(drive_id: str, item_id: str, df: pd.DataFrame):
     session, headers = get_graph_client()
     buffer = BytesIO()
@@ -75,85 +83,50 @@ def update_excel_file(drive_id: str, item_id: str, df: pd.DataFrame):
     if resp.status_code not in (200, 201):
         raise Exception(f"Failed to upload Excel: {resp.text}")
 
-def upload_csv_to_onedrive(drive_id: str, path: str, content: bytes) -> str:
-    session, headers = get_graph_client()
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{path}:/content"
-    resp = session.put(url, headers={"Authorization": headers["Authorization"]}, data=content)
-    if resp.status_code not in (200, 201):
-        raise Exception(f"Failed to upload CSV: {resp.text}")
-    return resp.json().get("id")
-
-# === COLUMN NORMALIZATION ===
-COLUMN_ALIASES = {
-    "PRODUCT CODE": "SKU",
-    "ITEM CODE": "SKU",
-    "Offer SKU": "SKU",
-    "OFFER_SKU": "SKU",
-    "ORDER NO": "ORDER",
-    "ORDER NUMBER": "ORDER",
-    "ORDER#": "ORDER",
-    "QUANTITY": "QTY",
-    "QTY.": "QTY",
-    "QTY ORDERED": "QTY"
-}
-
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [col.strip().upper() for col in df.columns]
-    df.rename(columns={k.upper(): v for k, v in COLUMN_ALIASES.items() if k.upper() in df.columns}, inplace=True)
-    return df
-
-# === STOCK UPDATE LOGIC ===
+# === STOCK UPDATE ===
 def upload_stock_update(stock_df: pd.DataFrame, items: dict) -> pd.DataFrame:
-    updated_rows = 0
     for sku, quantity in items.items():
         match = stock_df[stock_df["SKU"].astype(str).str.strip() == str(sku).strip()]
         if not match.empty:
             stock_df.loc[match.index, "QTY"] = quantity
-            updated_rows += 1
         else:
             new_row = pd.DataFrame({"SKU": [sku], "QTY": [quantity]})
             stock_df = pd.concat([stock_df, new_row], ignore_index=True)
-            updated_rows += 1
     return stock_df
 
-# === API: Update Stock ===
+# === ENDPOINT: /update-stock/
 @app.post("/update-stock/")
 async def update_stock(supplier_name: str, items: dict):
     try:
         supplier_name = supplier_name.lower()
         if supplier_name not in STOCK_FILE_IDS:
             raise HTTPException(status_code=400, detail="Unknown supplier name")
-
         stock_file_id = STOCK_FILE_IDS[supplier_name]
         stock_df = download_excel_file(DRIVE_ID, stock_file_id)
-        stock_df = normalize_columns(stock_df)
-        updated_stock_df = upload_stock_update(stock_df, items)
-        update_excel_file(DRIVE_ID, stock_file_id, updated_stock_df)
-
+        stock_df = stock_df.rename(columns=lambda x: x.strip())
+        stock_df = upload_stock_update(stock_df, items)
+        update_excel_file(DRIVE_ID, stock_file_id, stock_df)
         return {"success": True, "updated": items}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# === API: Generate Supplier Docs ===
+# === ENDPOINT: /generate-docs/
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
-        # Load uploaded order file (as-is, no normalization)
         order_df = pd.read_excel(file.file, engine="openpyxl")
 
-        # Rename known columns directly (no mapping logic)
+        # Rename exact known columns
         order_df.rename(columns={
-            "Offer SKU": "SKU",
             "Order number": "ORDER",
+            "Offer SKU": "SKU",
             "Quantity": "QTY"
         }, inplace=True)
 
-        # Validate all required columns are present
         for col in ["SKU", "ORDER", "QTY"]:
             if col not in order_df.columns:
                 raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
 
-        # Load Supplier.csv from OneDrive
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["SKU"] = supplier_df["SKU"].astype(str)
         supplier_df["SUPPLIER"] = supplier_df["SUPPLIER"].str.lower()
@@ -165,7 +138,7 @@ async def generate_docs(file: UploadFile = File(...)):
         nisbets_df = order_df[order_df["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
         nortons_df = order_df[order_df["SUPPLIER"] == "nortons"][["ORDER", "SKU", "QTY"]]
 
-        # Upload Nisbets CSV
+        # Upload CSV for Nisbets
         nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
         upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
 
@@ -174,12 +147,9 @@ async def generate_docs(file: UploadFile = File(...)):
             "nortons_rows": len(nortons_df),
             "status": "Supplier docs created"
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# === TEST ===
 @app.get("/test")
 def test():
     return {"status": "ok"}
