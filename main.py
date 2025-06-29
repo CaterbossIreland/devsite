@@ -81,14 +81,22 @@ def upload_to_onedrive(filename: str, df: pd.DataFrame):
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
-        uploaded_orders = pd.read_csv(BytesIO(await file.read()))
+        uploaded_orders = pd.read_excel(BytesIO(await file.read()))
+        uploaded_orders.columns = [c.strip().upper() for c in uploaded_orders.columns]
+
+        if "SKU" not in uploaded_orders.columns:
+            raise HTTPException(status_code=400, detail="SKU column missing in uploaded file")
+
         supplier_df = download_csv_file(SUPPLIER_FILE_ID)
-        supplier_map = supplier_df.set_index("SKU")["Supplier"].to_dict()
+        supplier_df.columns = [c.strip().upper() for c in supplier_df.columns]
+        supplier_map = supplier_df.set_index("SKU")["SUPPLIER"].to_dict()
 
         supplier_orders = {}
         for file_id in STOCK_FILE_IDS:
             stock_df = download_excel_file(file_id)
+            stock_df.columns = [c.strip().upper() for c in stock_df.columns]
             stock_skus = set(stock_df["SKU"].astype(str).str.strip().unique())
+
             uploaded_orders["SKU"] = uploaded_orders["SKU"].astype(str).str.strip()
             needed = uploaded_orders[~uploaded_orders["SKU"].isin(stock_skus)]
 
