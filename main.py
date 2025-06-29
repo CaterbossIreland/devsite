@@ -1,12 +1,9 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
 import pandas as pd
 import requests
 import os
-import zipfile
-from tempfile import TemporaryDirectory
 
 app = FastAPI()
 
@@ -21,7 +18,7 @@ app.add_middleware(
 # === Graph API Config ===
 TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
 CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
-CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"  # use correct secret here
+CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQqO20BTNU8Qa~i"  # Correct secret you confirmed
 
 SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
 DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
@@ -44,7 +41,7 @@ def get_access_token_sync():
     }
     response = requests.post(url, data=data)
     if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Failed to fetch access token")
+        raise HTTPException(status_code=500, detail="Failed to get access token")
     return response.json()["access_token"]
 
 # === Graph API File Fetch ===
@@ -55,7 +52,7 @@ def download_excel_file(item_id: str) -> pd.DataFrame:
     response = requests.get(endpoint, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Download failed for file ID: {item_id}")
-    return pd.read_excel(BytesIO(response.content), engine="openpyxl")
+    return pd.read_excel(BytesIO(response.content))
 
 def download_csv_file(item_id: str) -> pd.DataFrame:
     token = get_access_token_sync()
@@ -66,67 +63,84 @@ def download_csv_file(item_id: str) -> pd.DataFrame:
         raise HTTPException(status_code=500, detail=f"Download failed for CSV ID: {item_id}")
     return pd.read_csv(BytesIO(response.content))
 
+# === Upload Result File ===
+def upload_to_onedrive(filename: str, df: pd.DataFrame):
+    token = get_access_token_sync()
+    endpoint = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/Generated/{filename}:/content"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    with BytesIO() as output:
+        df.to_excel(output, index=False)
+        output.seek(0)
+        response = requests.put(endpoint, headers=headers, data=output.read())
+    if response.status_code >= 300:
+        raise HTTPException(status_code=response.status_code, detail="Upload failed")
+
 # === Main Endpoint ===
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
-        # Read uploaded Excel file
-        contents = await file.read()
-        df = pd.read_excel(BytesIO(contents), engine="openpyxl")
+        uploaded_orders = pd.read_excel(BytesIO(await file.read()))
 
-        # Normalize and map SKU column
+        # Case-insensitive mapping of SKU column aliases
         COLUMN_ALIASES = {
-            "PRODUCT CODE": "SKU",
-            "ITEM CODE": "SKU",
-            "OFFER SKU": "SKU",
-            "SKU": "SKU",
+            "product code": "SKU",
+            "item code": "SKU",
+            "offer sku": "SKU",
+            "sku": "SKU",
         }
-        normalized_columns = {col.strip().upper(): col for col in df.columns}
-        sku_col = next((normalized_columns.get(alias) for alias in COLUMN_ALIASES if alias in normalized_columns), None)
 
-        if not sku_col:
-            raise HTTPException(status_code=400, detail="None of ['SKU'] are in the columns")
+        normalized_cols = {col.lower(): col for col in uploaded_orders.columns}
 
-        # Rename detected SKU column to 'SKU' for consistency
-        df.rename(columns={sku_col: "SKU"}, inplace=True)
+        sku_col_original = None
+        for alias_lower in COLUMN_ALIASES.keys():
+            if alias_lower in normalized_cols:
+                sku_col_original = normalized_cols[alias_lower]
+                break
 
-        if "SKU" not in df.columns:
-            raise HTTPException(status_code=400, detail="SKU column missing after normalization")
+        if not sku_col_original:
+            raise HTTPException(status_code=400, detail="None of ['SKU'] columns found in upload")
 
-        # Download supplier map and create lookup dict
+        # Rename the identified SKU column to standard 'SKU'
+        uploaded_orders.rename(columns={sku_col_original: "SKU"}, inplace=True)
+
+        # Also normalize QTY column similarly (common aliases)
+        QTY_ALIASES = ["quantity", "qty", "qty ordered", "q.ty", "q.ty ordered"]
+        qty_col_original = None
+        for alias in QTY_ALIASES:
+            if alias in normalized_cols:
+                qty_col_original = normalized_cols[alias]
+                break
+        if not qty_col_original:
+            raise HTTPException(status_code=400, detail="Quantity column not found in upload")
+
+        uploaded_orders.rename(columns={qty_col_original: "QTY"}, inplace=True)
+
         supplier_df = download_csv_file(SUPPLIER_FILE_ID)
         supplier_map = supplier_df.set_index("SKU")["Supplier"].to_dict()
 
-        # Load stock files and exclude SKUs already in stock
-        needed_orders = df.copy()
+        supplier_orders = {}
         for file_id in STOCK_FILE_IDS:
             stock_df = download_excel_file(file_id)
             stock_skus = set(stock_df["SKU"].astype(str).str.strip().unique())
-            needed_orders = needed_orders[~needed_orders["SKU"].astype(str).str.strip().isin(stock_skus)]
+            uploaded_orders["SKU"] = uploaded_orders["SKU"].astype(str).str.strip()
+            needed = uploaded_orders[~uploaded_orders["SKU"].isin(stock_skus)]
 
-        # Group needed orders by supplier
-        supplier_orders = {}
-        for _, row in needed_orders.iterrows():
-            sku = str(row["SKU"]).strip()
-            supplier = supplier_map.get(sku, "Unknown")
-            supplier_orders.setdefault(supplier, []).append(row)
+            for _, row in needed.iterrows():
+                sku = row["SKU"]
+                supplier = supplier_map.get(sku, "Unknown")
+                if supplier not in supplier_orders:
+                    supplier_orders[supplier] = []
+                supplier_orders[supplier].append(row)
 
-        # Create zip with Excel files for each supplier
-        with TemporaryDirectory() as tmpdir:
-            zip_path = os.path.join(tmpdir, "supplier_orders.zip")
-            with zipfile.ZipFile(zip_path, "w") as zipf:
-                for supplier, rows in supplier_orders.items():
-                    df_supplier = pd.DataFrame(rows)
-                    filename = f"{supplier}_order_list.xlsx"
-                    filepath = os.path.join(tmpdir, filename)
-                    df_supplier.to_excel(filepath, index=False)
-                    zipf.write(filepath, arcname=filename)
+        # Optionally upload supplier orders back to OneDrive or return them here
+        for supplier, rows in supplier_orders.items():
+            supplier_df = pd.DataFrame(rows)
+            filename = f"{supplier}_order_list.xlsx"
+            upload_to_onedrive(filename, supplier_df)
 
-            return StreamingResponse(
-                open(zip_path, "rb"),
-                media_type="application/zip",
-                headers={"Content-Disposition": "attachment; filename=supplier_orders.zip"},
-            )
-
+        return {"message": "Supplier order files generated and uploaded."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
