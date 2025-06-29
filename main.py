@@ -137,3 +137,6 @@ async def generate_docs(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/test")
+def test():
+    return {"status": "ok"}
