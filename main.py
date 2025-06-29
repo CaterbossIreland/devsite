@@ -122,16 +122,20 @@ async def process_orders(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(BytesIO(contents))
 
-        COLUMN_ALIASES = {
-            "ORDER NO": "ORDER",
-            "ORDER NUMBER": "ORDER",
-            "PRODUCT CODE": "SKU",
-            "ITEM CODE": "SKU",
-            "QUANTITY": "QTY",
-            "QTY.": "QTY",
-            "QTY ORDERED": "QTY",
-            "ORDER#": "ORDER"
-        }
+       COLUMN_ALIASES = {
+    "ORDER NO": "ORDER",
+    "ORDER NUMBER": "ORDER",
+    "ORDER#": "ORDER",
+
+    "PRODUCT CODE": "SKU",
+    "ITEM CODE": "SKU",
+    "OFFER SKU": "SKU",  # ✅ this is the column in your file
+
+    "QUANTITY": "QTY",
+    "QTY.": "QTY",
+    "QTY ORDERED": "QTY"
+}
+
 
         REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
         df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip().upper()) for c in df.columns]
