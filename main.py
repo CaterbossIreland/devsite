@@ -29,7 +29,7 @@ STOCK_FILE_IDS = [
     "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"
 ]
 
-SUPPLIER_PATH = "/Supplier.csv"
+SUPPLIER_FILE_ID = "01YTGSV5ALH67IM5W73JDJ422J6AOUCC6M"
 
 # === Auth token generator ===
 def get_access_token_sync():
