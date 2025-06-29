@@ -119,14 +119,10 @@ async def generate_docs(file: UploadFile = File(...)):
     try:
         order_df = pd.read_excel(file.file, engine="openpyxl")
 
-        required_cols = ["Offer SKU", "Order number", "Quantity"]
-        for col in required_cols:
-            if col not in order_df.columns:
-                raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
-
-        order_df["SKU"] = order_df["Offer SKU"].astype(str)
-        order_df["ORDER"] = order_df["Order number"]
-        order_df["QTY"] = order_df["Quantity"]
+        # Use 0-based index to explicitly get the known columns by position
+        order_df["SKU"] = order_df.iloc[:, 13].astype(str)  # 14th column: Offer SKU
+        order_df["ORDER"] = order_df.iloc[:, 1]             # 2nd column: Order number
+        order_df["QTY"] = order_df.iloc[:, 2]               # 3rd column: Quantity
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["SKU"] = supplier_df["SKU"].astype(str)
