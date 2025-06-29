@@ -21,7 +21,7 @@ app.add_middleware(
 # === Graph API Config ===
 TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
 CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
-CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQqO20BTNU8Qa~i"  # use correct secret here
+CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"  # use correct secret here
 
 SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
 DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
