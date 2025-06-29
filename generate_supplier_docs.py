@@ -1,25 +1,13 @@
-from fastapi import UploadFile, File, APIRouter, HTTPException
 from fastapi.responses import FileResponse
-import pandas as pd
-from docx import Document
-from io import BytesIO
+from tempfile import TemporaryDirectory
 import zipfile
-import os
 
-router = APIRouter()
-
-SUPPLIER_MAP_PATH = "Supplier.csv"  # ✅ updated to match current filename
-TEMP_DIR = "/mnt/data/supplier_docs"
-ZIP_PATH = os.path.join(TEMP_DIR, "supplier_outputs.zip")
-
-@router.post("/generate_supplier_docs")
-async def generate_supplier_docs(file: UploadFile = File(...)):
+@app.post("/generate-docs/")
+async def generate_docs(file: UploadFile = File(...)):
     try:
-        # 1. Load order Excel file
-        order_bytes = await file.read()
-        order_df = pd.read_excel(BytesIO(order_bytes))
+        uploaded_orders = pd.read_excel(BytesIO(await file.read()))
 
-        # 2. Normalize column names
+        # Normalize column names
         COLUMN_ALIASES = {
             "ORDER NO": "ORDER",
             "ORDER NUMBER": "ORDER",
@@ -31,59 +19,44 @@ async def generate_supplier_docs(file: UploadFile = File(...)):
             "QTY.": "QTY",
             "QTY ORDERED": "QTY"
         }
-        order_df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip().upper()) for c in order_df.columns]
+        uploaded_orders.columns = [
+            COLUMN_ALIASES.get(col.strip().upper(), col.strip().upper())
+            for col in uploaded_orders.columns
+        ]
 
-        if not {"SKU", "QTY"}.issubset(order_df.columns):
-            raise HTTPException(status_code=400, detail="Missing required columns SKU or QTY")
+        if "SKU" not in uploaded_orders.columns or "QTY" not in uploaded_orders.columns:
+            raise HTTPException(status_code=400, detail="400: SKU or QTY column missing in uploaded file")
 
-        orders = order_df[["SKU", "QTY"]].dropna().to_dict(orient="records")
+        # Download supplier map
+        supplier_df = download_csv_file(SUPPLIER_FILE_ID)
+        supplier_map = supplier_df.set_index("SKU")["Supplier"].to_dict()
 
-        # 3. Load supplier map
-        supplier_df = pd.read_csv(SUPPLIER_MAP_PATH)
-        supplier_lookup = dict(zip(supplier_df['Supplier SKU'], supplier_df['Supplier Name']))
+        # Load stock files and remove already in stock
+        needed_orders = uploaded_orders.copy()
+        for file_id in STOCK_FILE_IDS:
+            stock_df = download_excel_file(file_id)
+            stock_skus = set(stock_df["SKU"].astype(str).str.strip().unique())
+            needed_orders = needed_orders[~needed_orders["SKU"].astype(str).str.strip().isin(stock_skus)]
 
-        # 4. Split orders
+        # Group by supplier
         supplier_orders = {}
-        unmatched = []
-        for entry in orders:
-            sku = str(entry['SKU']).strip()
-            try:
-                qty = int(entry['QTY'])
-            except ValueError:
-                continue
-            supplier = supplier_lookup.get(sku)
-            if supplier:
-                supplier_orders.setdefault(supplier, []).append({"SKU": sku, "QTY": qty})
-            else:
-                unmatched.append({"SKU": sku, "QTY": qty})
+        for _, row in needed_orders.iterrows():
+            sku = str(row["SKU"]).strip()
+            supplier = supplier_map.get(sku, "Unknown")
+            supplier_orders.setdefault(supplier, []).append(row)
 
-        # 5. Generate output docs
-        os.makedirs(TEMP_DIR, exist_ok=True)
-        output_files = []
+        # Create zip of generated Excel files
+        with TemporaryDirectory() as tmpdir:
+            zip_path = os.path.join(tmpdir, "supplier_orders.zip")
+            with zipfile.ZipFile(zip_path, "w") as zipf:
+                for supplier, rows in supplier_orders.items():
+                    df = pd.DataFrame(rows)
+                    filename = f"{supplier}_order_list.xlsx"
+                    filepath = os.path.join(tmpdir, filename)
+                    df.to_excel(filepath, index=False)
+                    zipf.write(filepath, arcname=filename)
 
-        for supplier, items in supplier_orders.items():
-            doc = Document()
-            doc.add_heading(f"{supplier} Order", level=1)
-            for item in items:
-                doc.add_paragraph(f"SKU: {item['SKU']} — QTY: {item['QTY']}")
-            path = os.path.join(TEMP_DIR, f"{supplier}_Orders.docx")
-            doc.save(path)
-            output_files.append(path)
-
-        if supplier_orders.get("Nisbets"):
-            checklist_path = os.path.join(TEMP_DIR, "Nisbets_Checklist.csv")
-            pd.DataFrame(supplier_orders["Nisbets"]).to_csv(checklist_path, index=False)
-            output_files.append(checklist_path)
-
-        # 6. Zip all
-        with zipfile.ZipFile(ZIP_PATH, "w") as zipf:
-            for f in output_files:
-                zipf.write(f, os.path.basename(f))
-
-        return {
-            "zip_file": ZIP_PATH,
-            "unmatched_skus": unmatched
-        }
+            return FileResponse(zip_path, filename="supplier_orders.zip", media_type="application/zip")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
