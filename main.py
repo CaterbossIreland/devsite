@@ -5,11 +5,8 @@ import pandas as pd
 import requests
 from io import BytesIO
 
-from graph_excel import (
-    get_excel_file_metadata,
-    list_excel_sheets,
-    read_sheet_data
-)
+from graph_excel import download_excel_file  # ✅ Just import what exists
+
 
 app = FastAPI()
 
