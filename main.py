@@ -1,13 +1,13 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from io import BytesIO
 import pandas as pd
-import requests
-import os
+from io import BytesIO
+import openpyxl
 
 app = FastAPI()
 
-# === CORS ===
+# CORS setup (allow all origins for now)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,57 +15,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Graph API Config ===
-TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
-CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
-CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
+# Define acceptable aliases for the SKU column
+COLUMN_ALIASES = {
+    "PRODUCT CODE": "SKU",
+    "ITEM CODE": "SKU",
+    "OFFER SKU": "SKU",
+    "SKU": "SKU"
+}
 
-SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
-DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
+# Endpoint
+@app.post("/generate-docs/")
+async def generate_docs(file: UploadFile = File(...)):
+    try:
+        # Read the Excel file into pandas
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents), engine="openpyxl")
 
-STOCK_FILE_IDS = [
-    "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX",  # Nisbets
-    "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP",  # Nortons
-]
+        # Normalize and map column names
+        normalized_columns = {col.strip().upper(): col for col in df.columns}
+        sku_col = next((normalized_columns.get(alias.upper()) for alias in COLUMN_ALIASES if alias.upper() in normalized_columns), None)
 
-SUPPLIER_FILE_ID = "01YTGSV5ALH67IM5W73JDJ422J6AOUCC6M"  # Supplier.csv
+        if not sku_col:
+            raise HTTPException(status_code=400, detail="None of ['SKU'] are in the columns")
 
-# === Token Fetching ===
-def get_access_token_sync():
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    data = {
-        "client_id": CLIENT_ID,
-        "scope": "https://graph.microsoft.com/.default",
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "client_credentials",
-    }
-    response = requests.post(url, data=data)
-    
-    # NEW DEBUGGING LINE:
-    print("TOKEN RESPONSE:", response.status_code, response.text)
+        # Group and summarize
+        summary = df.groupby(sku_col).size().reset_index(name="Quantity")
+        summary = summary.rename(columns={sku_col: "SKU"})
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Token request failed: " + response.text)
+        # Save result to in-memory Excel
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            summary.to_excel(writer, index=False, sheet_name="Supplier Order")
+        output.seek(0)
 
-    return response.json()["access_token"]
+        # Return downloadable file
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=supplier-order.xlsx"},
+        )
 
-
-# === Graph API File Fetch ===
-def download_excel_file(item_id: str) -> pd.DataFrame:
-    token = get_access_token_sync()
-    endpoint = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{item_id}/content"
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(endpoint, headers=headers)
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Download failed for file ID: {item_id}")
-    return pd.read_excel(BytesIO(response.content))
-
-def download_csv_file(item_id: str) -> pd.DataFrame:
-    token = get_access_token_sync()
-    endpoint = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{item_id}/content"
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(endpoint, headers=headers)
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Download failed for CSV ID: {item_id}")
-    return pd.read_csv(BytesIO(response.content))
-import generate_supplier_docs  # This registers the /generate-docs/ route
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
