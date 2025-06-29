@@ -112,23 +112,20 @@ async def update_stock(supplier_name: str, items: dict):
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
-        order_df = pd.read_excel(file.file, engine="openpyxl", dtype=str)
-        order_df.columns = order_df.columns.str.strip()
-
-        # Force rename based on known positions
-        col_map = {
-            1: "Order number",    # index 1 = second column
-            13: "Offer SKU",      # index 13 = 14th column
-            2: "Quantity"         # index 2 = third column
-        }
-        order_df = order_df.rename(columns={order_df.columns[i]: name for i, name in col_map.items()})
+        order_df = pd.read_excel(file.file, engine="openpyxl")
+        order_df.columns = (
+            order_df.columns
+            .str.replace("\u00a0", " ", regex=False)
+            .str.encode("ascii", "ignore").str.decode("ascii")
+            .str.strip()
+        )
 
         required_cols = ["Offer SKU", "Order number", "Quantity"]
         missing_cols = [col for col in required_cols if col not in order_df.columns]
         if missing_cols:
-            raise HTTPException(status_code=400, detail=f"Missing required column(s): {', '.join(missing_cols)}. Found columns: {', '.join(order_df.columns)}")
+            raise HTTPException(status_code=400, detail=f"Missing required column(s): {', '.join(missing_cols)}. Found columns: {order_df.columns.tolist()}")
 
-        order_df["Offer SKU"] = order_df["Offer SKU"].astype(str).str.strip()
+        order_df["Offer SKU"] = order_df["Offer SKU"].astype(str).fillna("").str.strip()
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["Offer SKU"] = supplier_df["Offer SKU"].astype(str).str.strip()
@@ -138,7 +135,7 @@ async def generate_docs(file: UploadFile = File(...)):
         order_df["Supplier Name"] = order_df["Offer SKU"].map(supplier_map)
 
         nisbets_df = order_df[order_df["Supplier Name"] == "nisbets"][["Order number", "Offer SKU", "Quantity"]]
-        nortons_df = order_df[order_df["Supplier Name"] == "nortons"][["Order number", "Offer SKU", "Quantity"]]
+        nortons_df = order_df[order_df["Supplier Name"] == "nortons"]["Order number", "Offer SKU", "Quantity"]
 
         nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
         upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
@@ -148,10 +145,8 @@ async def generate_docs(file: UploadFile = File(...)):
             "nortons_rows": len(nortons_df),
             "status": "Supplier docs created"
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/test")
 def test():
