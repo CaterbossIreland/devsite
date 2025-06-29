@@ -20,3 +20,23 @@ def list_excel_sheets(file_id):
     response.raise_for_status()
     
     return [sheet["name"] for sheet in response.json()["value"]]
+def read_sheet_data(file_id: str, sheet_name="Sheet1"):
+    token = get_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    url = (
+        f"{GRAPH_BASE_URL}/users/{USER_ID}/drive/items/{file_id}/"
+        f"workbook/worksheets('{sheet_name}')/usedRange(valuesOnly=true)"
+    )
+
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+
+    data = response.json()["values"]  # First row = headers
+    if not data or len(data) < 2:
+        return []
+
+    headers_row = data[0]
+    rows = [dict(zip(headers_row, row)) for row in data[1:]]
+
+    return rows
