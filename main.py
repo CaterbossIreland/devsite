@@ -134,7 +134,7 @@ async def generate_docs(file: UploadFile = File(...)):
 
         order_df["SUPPLIER"] = order_df["SKU"].map(supplier_map)
 
-        supplier_data = order_df[["Order number", "SKU", "Quantity", "SUPPLIER"]].copy()
+        supplier_data = order_df[["Order number", "Offer SKU", "Quantity", "SUPPLIER"]].copy()
         supplier_data.columns = ["ORDER", "SKU", "QTY", "SUPPLIER"]
 
         nisbets_df = supplier_data[supplier_data["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
