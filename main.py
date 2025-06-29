@@ -2,11 +2,15 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-import tempfile
 import requests
 import os
 from io import BytesIO
-from graph_excel import get_excel_file_metadata, list_excel_sheets
+
+from graph_excel import (
+    get_excel_file_metadata,
+    list_excel_sheets,
+    read_sheet_data
+)
 
 app = FastAPI()
 
@@ -50,6 +54,7 @@ class ExcelFileRequest(BaseModel):
     item_id: str
 
 # === ROUTES ===
+
 @app.get("/")
 def root():
     return {"message": "Server is up and running."}
@@ -64,6 +69,12 @@ def get_sheets():
     file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
     sheets = list_excel_sheets(file_id)
     return {"sheets": sheets}
+
+@app.get("/stock-data")
+def get_stock_data():
+    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
+    data = read_sheet_data(file_id)
+    return {"rows": data[:10]}  # limit for test
 
 @app.get("/list_sites")
 def list_sites():
@@ -130,10 +141,3 @@ async def process_orders(file: UploadFile = File(...)):
         return {"status": "success", "rows": df.shape[0]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-from graph_excel import read_sheet_data
-
-@app.get("/stock-data")
-def get_stock_data():
-    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
-    data = read_sheet_data(file_id)
-    return {"rows": data[:10]}  # show only first 10 for now
