@@ -8,6 +8,14 @@ import logging
 
 from graph_excel import download_excel_file, read_sheet_data, upload_stock_update, upload_csv_to_onedrive
 from supplier_logic import identify_supplier
+from graph_files import (
+    download_excel_file,
+    download_csv_file,
+    update_excel_file,
+    upload_csv_file,
+    read_sheet_data,
+    upload_stock_update,  # ✅ Make sure this is included
+)
 
 app = FastAPI()
 
