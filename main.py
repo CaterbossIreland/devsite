@@ -1,19 +1,15 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import pandas as pd
-import requests
 from io import BytesIO
-
-from graph_excel import (
-    get_excel_file_metadata,
-    list_excel_sheets,
-    read_sheet_data
-)
+import os
+import uuid
+import csv
+from docx import Document
 
 app = FastAPI()
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,239 +17,107 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === ENV CONFIG ===
-TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
-CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
-CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
-SITE_ID = "caterboss.sharepoint.com,798d8a1b-c8b4-493e-b320-be94a4c165a1,ec07bde5-4a37-459a-92ef-a58100f17191"
-DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
-STOCK_FILE_IDS = [
-    "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX",
-    "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"
-]
+# === Configuration ===
+OUTPUT_DIR = "downloads"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+SUPPLIER_MAP_PATH = "supplier.csv.csv"
 
-# === AUTH ===
-def get_access_token_sync():
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    data = {
-        "client_id": CLIENT_ID,
-        "scope": "https://graph.microsoft.com/.default",
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "client_credentials"
+# === Helper to standardize columns ===
+def normalize_columns(df):
+    COLUMN_ALIASES = {
+        "ORDER NO": "ORDER",
+        "ORDER NUMBER": "ORDER",
+        "ORDER#": "ORDER",
+        "PRODUCT CODE": "SKU",
+        "ITEM CODE": "SKU",
+        "OFFER SKU": "SKU",
+        "QUANTITY": "QTY",
+        "QTY.": "QTY",
+        "QTY ORDERED": "QTY"
     }
-    response = requests.post(url, data=data)
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Failed to obtain token")
-    return response.json()["access_token"]
+    df.columns = [COLUMN_ALIASES.get(col.strip().upper(), col.strip().upper()) for col in df.columns]
+    return df
 
-class ExcelFileRequest(BaseModel):
-    site_id: str
-    drive_id: str
-    item_id: str
+# === Helper to create .docx from grouped SKUs ===
+def create_doc(supplier_name, skus):
+    doc = Document()
+    doc.add_heading(f"Order for {supplier_name}", 0)
+    table = doc.add_table(rows=1, cols=2)
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'SKU'
+    hdr_cells[1].text = 'QTY'
+    for item in skus:
+        row = table.add_row().cells
+        row[0].text = item['SKU']
+        row[1].text = str(item['QTY'])
+    filename = f"{supplier_name.replace(' ', '_')}_Orders.docx"
+    path = os.path.join(OUTPUT_DIR, filename)
+    doc.save(path)
+    return filename, path
 
-@app.get("/")
-def root():
-    return {"message": "Server is up and running."}
+# === Helper to create CSV checklist for Nisbets ===
+def create_checklist_csv(skus):
+    filename = "Nisbets_Checklist.csv"
+    path = os.path.join(OUTPUT_DIR, filename)
+    with open(path, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["SKU", "QTY"])
+        for item in skus:
+            writer.writerow([item['SKU'], item['QTY']])
+    return filename, path
 
-@app.get("/get-file-id")
-def get_file_id():
-    file_id = get_excel_file_metadata()
-    return {"file_id": file_id}
-
-@app.get("/sheets")
-def get_sheets():
-    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
-    sheets = list_excel_sheets(file_id)
-    return {"sheets": sheets}
-
-@app.get("/stock-data")
-def get_stock_data():
-    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
-    data = read_sheet_data(file_id)
-    return {"rows": data[:10]}
-
-@app.get("/list_sites")
-def list_sites():
-    token = get_access_token_sync()
-    url = "https://graph.microsoft.com/v1.0/sites?search=*"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.get("/list_drives")
-def list_drives():
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.get("/list_files")
-def list_files():
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root/children"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.post("/read_excel")
-def read_excel(request: ExcelFileRequest):
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{request.site_id}/drives/{request.drive_id}/items/{request.item_id}/workbook/worksheets"
-    headers = {"Authorization": f"Bearer {token}"}
-    return requests.get(url, headers=headers).json()
-
-@app.post("/write_excel")
-def write_excel(request: ExcelFileRequest):
-    token = get_access_token_sync()
-    url = f"https://graph.microsoft.com/v1.0/sites/{request.site_id}/drives/{request.drive_id}/items/{request.item_id}/workbook/worksheets('Sheet1')/range(address='A1')"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    data = {"values": [["Updated by FastAPI!"]]}
-    response = requests.patch(url, headers=headers, json=data)
-    return {"message": "Cell A1 updated"}
-
-@app.post("/process_orders")
-async def process_orders(file: UploadFile = File(...)):
+@app.post("/generate_supplier_docs")
+async def generate_supplier_docs(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
-        df = pd.read_excel(BytesIO(contents))
+        order_data = await file.read()
+        df = pd.read_excel(BytesIO(order_data))
+        df = normalize_columns(df)
 
-        COLUMN_ALIASES = {
-            "ORDER NO": "ORDER",
-            "ORDER NUMBER": "ORDER",
-            "ORDER#": "ORDER",
-            "PRODUCT CODE": "SKU",
-            "ITEM CODE": "SKU",
-            "OFFER SKU": "SKU",
-            "QUANTITY": "QTY",
-            "QTY.": "QTY",
-            "QTY ORDERED": "QTY"
-        }
+        if not {"SKU", "QTY"}.issubset(df.columns):
+            raise HTTPException(status_code=400, detail="Missing required columns")
 
-        REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
-        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip()) for c in df.columns]
-        df.columns = [c.upper() for c in df.columns]
-        missing = REQUIRED_COLUMNS - set(df.columns)
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+        supplier_df = pd.read_csv(SUPPLIER_MAP_PATH)
+        supplier_df.columns = [col.strip().upper() for col in supplier_df.columns]
 
-        return {"status": "success", "rows": df.shape[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        if not {"SKU", "SUPPLIER"}.issubset(supplier_df.columns):
+            raise HTTPException(status_code=400, detail="Supplier map must have SKU and SUPPLIER columns")
 
-@app.post("/check_stock")
-async def check_stock(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        df = pd.read_excel(BytesIO(contents))
+        merged = df.merge(supplier_df, how="left", on="SKU")
 
-        COLUMN_ALIASES = {
-            "ORDER NO": "ORDER",
-            "ORDER NUMBER": "ORDER",
-            "ORDER#": "ORDER",
-            "PRODUCT CODE": "SKU",
-            "ITEM CODE": "SKU",
-            "OFFER SKU": "SKU",
-            "QUANTITY": "QTY",
-            "QTY.": "QTY",
-            "QTY ORDERED": "QTY"
-        }
+        unmatched = merged[merged["SUPPLIER"].isna()][["SKU", "QTY"]].to_dict(orient="records")
 
-        REQUIRED_COLUMNS = {"ORDER", "SKU", "QTY"}
-        df.columns = [COLUMN_ALIASES.get(c.strip().upper(), c.strip()) for c in df.columns]
-        df.columns = [c.upper() for c in df.columns]
-        missing = REQUIRED_COLUMNS - set(df.columns)
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+        matched = merged.dropna(subset=["SUPPLIER"])
+        grouped = matched.groupby("SUPPLIER")
 
-        stock_data = read_sheet_data("01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
-        stock_df = pd.DataFrame(stock_data)
+        files = []
+        response_preview = {}
 
-        order_df = df[["SKU", "QTY"]].copy()
-        order_df["SKU"] = order_df["SKU"].astype(str)
-        stock_df["SKU"] = stock_df["SKU"].astype(str)
-        stock_df["QTY"] = pd.to_numeric(stock_df["QTY"], errors="coerce").fillna(0).astype(int)
+        for supplier, group in grouped:
+            skus = group.groupby("SKU")["QTY"].sum().reset_index().to_dict(orient="records")
+            doc_filename, doc_path = create_doc(supplier, skus)
+            files.append({"name": doc_filename, "url": f"/downloads/{doc_filename}"})
 
-        merged = order_df.groupby("SKU").sum().reset_index()
-        merged = merged.merge(stock_df, how="left", on="SKU", suffixes=("_ordered", "_stock"))
-        merged["QTY_stock"] = merged["QTY_stock"].fillna(0).astype(int)
+            if supplier.lower() == "nisbets":
+                csv_filename, csv_path = create_checklist_csv(skus)
+                files.append({"name": csv_filename, "url": f"/downloads/{csv_filename}"})
 
-        merged["FULFILLED"] = merged[["QTY_ordered", "QTY_stock"]].min(axis=1)
-        merged["TO_ORDER"] = merged["QTY_ordered"] - merged["FULFILLED"]
+            # Include doc preview
+            preview_lines = [f"SKU: {item['SKU']} - QTY: {item['QTY']}" for item in skus]
+            response_preview[supplier] = preview_lines
 
-        fulfilled = []
-        to_order = []
-
-        for _, row in merged.iterrows():
-            if row["FULFILLED"] > 0:
-                fulfilled.append({
-                    "SKU": row["SKU"],
-                    "ordered": int(row["QTY_ordered"]),
-                    "stock_before": int(row["QTY_stock"]),
-                    "fulfilled": int(row["FULFILLED"]),
-                    "stock_after": int(row["QTY_stock"] - row["FULFILLED"])
-                })
-            if row["TO_ORDER"] > 0:
-                to_order.append({
-                    "SKU": row["SKU"],
-                    "ordered": int(row["QTY_ordered"]),
-                    "fulfilled": int(row["FULFILLED"])
-                })
-
-        return {
-            "fulfilled_from_stock": fulfilled,
-            "to_order_from_supplier": to_order
-        }
+        return JSONResponse(content={
+            "status": "success",
+            "files": files,
+            "preview": response_preview,
+            "unmatched_skus": unmatched
+        })
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Stock check failed: {str(e)}")
-@app.post("/update_stock_from_fulfilled")
-async def update_stock_from_fulfilled(fulfilled_list: list[dict]):
-    try:
-        # Step 1: Fetch stock data
-        file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
-        sheet_name = "Sheet1"
-        token = get_access_token_sync()
-        headers = {"Authorization": f"Bearer {token}"}
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # Read sheet
-        url = (
-            f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/"
-            f"items/{file_id}/workbook/worksheets('{sheet_name}')/usedRange(valuesOnly=true)"
-        )
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()["values"]
-
-        # Step 2: Parse to DataFrame
-        df = pd.DataFrame(data[1:], columns=data[0])
-        df["SKU"] = df["SKU"].astype(str)
-        df["QTY"] = pd.to_numeric(df["QTY"], errors="coerce").fillna(0).astype(int)
-
-        # Step 3: Apply updates from fulfilled_list
-        update_map = {item["SKU"]: item["fulfilled"] for item in fulfilled_list}
-        df["QTY"] = df.apply(
-            lambda row: max(row["QTY"] - update_map.get(row["SKU"], 0), 0), axis=1
-        )
-
-        # Step 4: Push updated values back
-        updated_values = [list(df.columns)] + df.astype(str).values.tolist()
-        patch_url = (
-            f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/"
-            f"items/{file_id}/workbook/worksheets('{sheet_name}')/range(address='A1')"
-        )
-        patch_headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        patch_payload = {"values": updated_values}
-
-        patch_response = requests.patch(patch_url, headers=patch_headers, json=patch_payload)
-        patch_response.raise_for_status()
-
-        return {"status": "success", "message": "Stock levels updated successfully"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Stock update failed: {str(e)}")
-from routes.generate_supplier_docs import router as supplier_docs_router
-app.include_router(supplier_docs_router)
+@app.get("/downloads/{filename}")
+def download_file(filename: str):
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
