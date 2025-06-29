@@ -8,11 +8,17 @@ from datetime import datetime
 app = FastAPI()
 
 # === Configuration: Microsoft Graph Credentials and IDs ===
-TENANT_ID = "<YOUR_TENANT_ID>"       # e.g., "xxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-CLIENT_ID = "<YOUR_CLIENT_ID>"       # e.g., "yyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
-CLIENT_SECRET = "<YOUR_CLIENT_SECRET>"  # e.g., "your-client-secret-here"
-DRIVE_ID = "<YOUR_DRIVE_ID>"         # OneDrive/SharePoint drive ID containing the files
-SUPPLIER_FILE_ID = "<SUPPLIER_CSV_FILE_ITEM_ID>"  # OneDrive item ID of the supplier reference CSV
+TENANT_ID = "ce280aae-ee92-41fe-ab60-66b37ebc97dd"
+CLIENT_ID = "83acd574-ab02-4cfe-b28c-e38c733d9a52"
+CLIENT_SECRET = "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i"
+DRIVE_ID = "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP"
+NISBETS_STOCK_FILE_ID = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
+NORTONS_STOCK_FILE_ID = "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP"
+SUPPLIER_FILE_ID = "01YTGSV5ALH67IM5W73JDJ422J6AOUCC6M"
+STOCK_FILE_IDS = {
+    "nisbets": NISBETS_STOCK_FILE_ID,
+    "nortons": NORTONS_STOCK_FILE_ID,
+}
 
 def get_graph_token() -> str:
     """Obtain an OAuth2 access token for Microsoft Graph using client credentials."""
