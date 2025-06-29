@@ -60,3 +60,4 @@ def download_csv_file(item_id: str) -> pd.DataFrame:
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Download failed for CSV ID: {item_id}")
     return pd.read_csv(BytesIO(response.content))
+import generate_supplier_docs  # This registers the /generate-docs/ route
