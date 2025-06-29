@@ -106,8 +106,6 @@ async def update_stock(supplier_name: str, items: dict):
 
         stock_file_id = STOCK_FILE_IDS[supplier_name]
         stock_df = download_excel_file(DRIVE_ID, stock_file_id)
-        stock_df.columns = [col.strip().lower() for col in stock_df.columns]
-        stock_df.rename(columns={"sku": "SKU", "qty": "QTY"}, inplace=True)
         updated_stock_df = upload_stock_update(stock_df, items)
         update_excel_file(DRIVE_ID, stock_file_id, updated_stock_df)
 
@@ -119,35 +117,28 @@ async def update_stock(supplier_name: str, items: dict):
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
+        # Load uploaded file directly using the column names as they appear
         order_df = pd.read_excel(file.file, engine="openpyxl")
 
-        # Normalize columns
-        order_df.columns = [col.strip().lower() for col in order_df.columns]
-        rename_map = {
-            "offer sku": "SKU",
-            "order number": "ORDER",
-            "quantity": "QTY"
-        }
-        order_df.rename(columns=rename_map, inplace=True)
-
-        # Validate required columns
-        for col in ["SKU", "ORDER", "QTY"]:
+        required_cols = ["Offer SKU", "Order Number", "Quantity"]
+        for col in required_cols:
             if col not in order_df.columns:
                 raise HTTPException(status_code=400, detail=f"Missing required column: {col}")
 
-        # Supplier mapping
+        # Load Supplier.csv from OneDrive
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["SKU"] = supplier_df["SKU"].astype(str)
         supplier_df["SUPPLIER"] = supplier_df["SUPPLIER"].str.lower()
 
         supplier_map = dict(zip(supplier_df["SKU"], supplier_df["SUPPLIER"]))
-        order_df["SKU"] = order_df["SKU"].astype(str)
-        order_df["SUPPLIER"] = order_df["SKU"].map(supplier_map)
 
-        nisbets_df = order_df[order_df["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
-        nortons_df = order_df[order_df["SUPPLIER"] == "nortons"][["ORDER", "SKU", "QTY"]]
+        order_df["Offer SKU"] = order_df["Offer SKU"].astype(str)
+        order_df["SUPPLIER"] = order_df["Offer SKU"].map(supplier_map)
 
-        # Save Nisbets file
+        nisbets_df = order_df[order_df["SUPPLIER"] == "nisbets"][["Order Number", "Offer SKU", "Quantity"]]
+        nortons_df = order_df[order_df["SUPPLIER"] == "nortons"][["Order Number", "Offer SKU", "Quantity"]]
+
+        # Upload Nisbets CSV
         nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
         upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
 
