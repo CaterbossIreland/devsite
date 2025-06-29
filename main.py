@@ -17,7 +17,6 @@ STOCK_FILE_IDS = {
     "nortons": NORTONS_STOCK_FILE_ID,
 }
 
-# === FASTAPI APP ===
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -26,7 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === AUTH ===
 def get_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
@@ -40,7 +38,6 @@ def get_access_token():
         raise Exception(f"Token fetch failed: {resp.text}")
     return resp.json()["access_token"]
 
-# === GRAPH HELPERS ===
 def get_graph_client():
     token = get_access_token()
     headers = {
@@ -96,7 +93,6 @@ def upload_stock_update(stock_df: pd.DataFrame, items: dict) -> pd.DataFrame:
             updated_rows += 1
     return stock_df
 
-# === API: Update Stock ===
 @app.post("/update-stock/")
 async def update_stock(supplier_name: str, items: dict):
     try:
@@ -113,27 +109,27 @@ async def update_stock(supplier_name: str, items: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# === API: Generate Supplier Docs ===
 @app.post("/generate-docs/")
 async def generate_docs(file: UploadFile = File(...)):
     try:
         order_df = pd.read_excel(file.file, engine="openpyxl")
 
-        # Use 0-based index to explicitly get the known columns by position
-        order_df["SKU"] = order_df.iloc[:, 13].astype(str)  # 14th column: Offer SKU
-        order_df["ORDER"] = order_df.iloc[:, 1]             # 2nd column: Order number
-        order_df["QTY"] = order_df.iloc[:, 2]               # 3rd column: Quantity
+        if not all(col in order_df.columns for col in ["Offer SKU", "Order number", "Quantity"]):
+            raise HTTPException(status_code=400, detail="Missing one of: Offer SKU, Order number, Quantity")
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["SKU"] = supplier_df["SKU"].astype(str)
         supplier_df["SUPPLIER"] = supplier_df["SUPPLIER"].str.lower()
-
         supplier_map = dict(zip(supplier_df["SKU"], supplier_df["SUPPLIER"]))
 
+        order_df["SKU"] = order_df["Offer SKU"].astype(str)
         order_df["SUPPLIER"] = order_df["SKU"].map(supplier_map)
 
-        nisbets_df = order_df[order_df["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
-        nortons_df = order_df[order_df["SUPPLIER"] == "nortons"][["ORDER", "SKU", "QTY"]]
+        supplier_data = order_df[["Order number", "SKU", "Quantity", "SUPPLIER"]].copy()
+        supplier_data.columns = ["ORDER", "SKU", "QTY", "SUPPLIER"]
+
+        nisbets_df = supplier_data[supplier_data["SUPPLIER"] == "nisbets"][["ORDER", "SKU", "QTY"]]
+        nortons_df = supplier_data[supplier_data["SUPPLIER"] == "nortons"][["ORDER", "SKU", "QTY"]]
 
         nisbets_csv = nisbets_df.to_csv(index=False).encode("utf-8")
         upload_csv_to_onedrive(DRIVE_ID, "nisbets_order.csv", nisbets_csv)
