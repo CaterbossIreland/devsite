@@ -114,15 +114,18 @@ async def generate_docs(file: UploadFile = File(...)):
     try:
         order_df = pd.read_excel(file.file, engine="openpyxl")
 
-        if not all(col in order_df.columns for col in ["Offer SKU", "Order number", "Quantity"]):
-            raise HTTPException(status_code=400, detail="Missing one of: Offer SKU, Order number, Quantity")
+        required_cols = ["Offer SKU", "Order number", "Quantity"]
+        missing_cols = [col for col in required_cols if col not in order_df.columns]
+        if missing_cols:
+            raise HTTPException(status_code=400, detail=f"Missing required column(s): {', '.join(missing_cols)}. Found columns: {', '.join(order_df.columns)}")
+
+        order_df.insert(loc=0, column="SKU", value=order_df["Offer SKU"].astype(str))
 
         supplier_df = download_csv_file(DRIVE_ID, SUPPLIER_FILE_ID)
         supplier_df["SKU"] = supplier_df["SKU"].astype(str)
         supplier_df["SUPPLIER"] = supplier_df["SUPPLIER"].str.lower()
         supplier_map = dict(zip(supplier_df["SKU"], supplier_df["SUPPLIER"]))
 
-        order_df["SKU"] = order_df["Offer SKU"].astype(str)
         order_df["SUPPLIER"] = order_df["SKU"].map(supplier_map)
 
         supplier_data = order_df[["Order number", "SKU", "Quantity", "SUPPLIER"]].copy()
