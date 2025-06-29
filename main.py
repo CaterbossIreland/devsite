@@ -186,3 +186,16 @@ def write_excel(request: ExcelFileRequest):
     data = {"values": [["Updated by FastAPI!"]]}
     response = requests.patch(url, headers=headers, json=data)
     return {"message": "Cell A1 updated"}
+from fastapi import FastAPI
+from graph_excel import get_excel_file_metadata
+
+app = FastAPI()
+
+@app.get("/")
+def root():
+    return {"message": "Server is up and running."}
+
+@app.get("/get-file-id")
+def get_file_id():
+    file_id = get_excel_file_metadata()
+    return {"file_id": file_id}
