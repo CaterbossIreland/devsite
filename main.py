@@ -130,3 +130,10 @@ async def process_orders(file: UploadFile = File(...)):
         return {"status": "success", "rows": df.shape[0]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+from graph_excel import read_sheet_data
+
+@app.get("/stock-data")
+def get_stock_data():
+    file_id = "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX"
+    data = read_sheet_data(file_id)
+    return {"rows": data[:10]}  # show only first 10 for now
