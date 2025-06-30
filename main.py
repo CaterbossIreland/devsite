@@ -1,9 +1,10 @@
+
 import os
 import requests
 import pandas as pd
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse
-from io import BytesIO
+from fastapi.responses import HTMLResponse, StreamingResponse
+from io import BytesIO, StringIO
 
 TENANT_ID = os.getenv("TENANT_ID", "ce280aae-ee92-41fe-ab60-66b37ebc97dd")
 CLIENT_ID = os.getenv("CLIENT_ID", "83acd574-ab02-4cfe-b28c-e38c733d9a52")
@@ -12,6 +13,9 @@ DRIVE_ID = os.getenv("DRIVE_ID", "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzW
 SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADDVCVQ")
 NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
+
+app = FastAPI()
+latest_nisbets_csv = None  # Store CSV in memory for session
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -54,8 +58,6 @@ def upload_excel_file(file_id, df):
     r = requests.put(url, headers=headers, data=excel_buffer.read())
     r.raise_for_status()
 
-app = FastAPI()
-
 @app.get("/", response_class=HTMLResponse)
 async def main_upload_form():
     return """
@@ -92,6 +94,7 @@ async def main_upload_form():
 
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
+    global latest_nisbets_csv
     try:
         df = pd.read_excel(file.file)
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
@@ -113,9 +116,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
     except Exception as e:
         return HTMLResponse(f"<b>Stock file fetch failed:</b> {e}", status_code=500)
 
-    # Prepare working copies of stock
     stock_left = {k: stock_map[k].copy() for k in stock_map}
-
     supplier_orders = {'Nortons': {}, 'Nisbets': {}}
     stock_ship_orders = {}
 
@@ -135,19 +136,16 @@ async def upload_orders_display(file: UploadFile = File(...)):
         from_stock = min(qty, in_stock)
         to_supplier = qty - from_stock
 
-        # Record shipped from stock
         if from_stock > 0:
             if order_no not in stock_ship_orders:
                 stock_ship_orders[order_no] = []
             stock_ship_orders[order_no].append((sku, from_stock))
             stock_left[supplier][sku] = max(in_stock - from_stock, 0)
-            # Mark which file to update
             if supplier == 'Nisbets':
                 nisbets_shipped.add(sku)
             else:
                 nortons_shipped.add(sku)
 
-        # Record what to order
         if to_supplier > 0:
             if order_no not in supplier_orders[supplier]:
                 supplier_orders[supplier][order_no] = []
@@ -166,6 +164,21 @@ async def upload_orders_display(file: UploadFile = File(...)):
     nisbets_out = format_order_block(supplier_orders['Nisbets'], "Nisbets orders")
     stock_out = format_order_block(stock_ship_orders, "stock shipments")
 
+    # --- NEW: Build Nisbets.csv
+    nisbets_csv_rows = []
+    for order, lines in supplier_orders['Nisbets'].items():
+        for sku, qty in lines:
+            nisbets_csv_rows.append({'Order Number': order, 'Offer SKU': sku, 'Quantity': qty})
+    if nisbets_csv_rows:
+        nisbets_csv_df = pd.DataFrame(nisbets_csv_rows)
+        csv_buffer = StringIO()
+        nisbets_csv_df.to_csv(csv_buffer, index=False)
+        latest_nisbets_csv = csv_buffer.getvalue().encode('utf-8')
+        download_link = "<a href='/download_nisbets_csv' download='Nisbets.csv'><button class='copy-btn' style='right:auto;top:auto;position:relative;margin-bottom:1em;'>Download Nisbets CSV</button></a>"
+    else:
+        latest_nisbets_csv = None
+        download_link = ""
+
     # Update stock DataFrames
     for sku in nisbets_shipped:
         if sku in nisbets_stock['Offer SKU'].values:
@@ -175,14 +188,14 @@ async def upload_orders_display(file: UploadFile = File(...)):
         if sku in nortons_stock['Offer SKU'].values:
             idx = nortons_stock[nortons_stock['Offer SKU'] == sku].index[0]
             nortons_stock.at[idx, 'Quantity'] = max(stock_left['Nortons'].get(sku, 0), 0)
-
-    # Overwrite the updated stock files on OneDrive
     try:
         if nisbets_shipped:
             upload_excel_file(NISBETS_STOCK_FILE_ID, nisbets_stock)
         if nortons_shipped:
             upload_excel_file(NORTONS_STOCK_FILE_ID, nortons_stock)
     except Exception as e:
+        if "423" in str(e):
+            return HTMLResponse("<b>Stock file update failed: File is open or locked in Excel.<br>Please close the file everywhere and try again in a minute.</b>", status_code=423)
         return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
 
     html = f"""
@@ -200,6 +213,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
     </div>
     <div class="out-card">
       <h3>Nisbets (Order from Supplier)</h3>
+      {download_link}
       <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nisbetsout').innerText)">Copy</button>
       <pre id="nisbetsout">{nisbets_out}</pre>
     </div>
@@ -210,3 +224,13 @@ async def upload_orders_display(file: UploadFile = File(...)):
     </div>
     """
     return HTMLResponse(html)
+
+@app.get("/download_nisbets_csv")
+async def download_nisbets_csv():
+    if not latest_nisbets_csv:
+        return HTMLResponse("<b>No Nisbets CSV generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(latest_nisbets_csv),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=Nisbets.csv"}
+    )
