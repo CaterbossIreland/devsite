@@ -13,6 +13,9 @@ SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADD
 NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
 
+# Path to the template file
+ZOHO_TEMPLATE_PATH = "/mnt/data/column format.xlsx"
+
 app = FastAPI()
 latest_nisbets_csv = None
 latest_zoho_xlsx = None
@@ -179,8 +182,15 @@ async def upload_orders_display(file: UploadFile = File(...)):
         latest_nisbets_csv = None
         download_link = ""
 
-    # --- Build Zoho XLSX (with column order)
+    # --- Build Zoho XLSX (template column order)
+    try:
+        template_df = pd.read_excel(ZOHO_TEMPLATE_PATH)
+        zoho_col_order = list(template_df.columns)
+    except Exception as e:
+        return HTMLResponse(f"<b>Failed to load Zoho template: {e}</b>", status_code=500)
+
     zoho_df = df.copy()
+    # Add your fields and set default values
     if 'Date created' in zoho_df.columns:
         zoho_df['Date created'] = zoho_df['Date created'].astype(str).str.split().str[0]
     zoho_df['Shipping total amount'] = 4.95
@@ -201,13 +211,13 @@ async def upload_orders_display(file: UploadFile = File(...)):
         zoho_df['Invoice Number'] = zoho_df['Order number']
         zoho_df['Subject'] = zoho_df['Order number']
     zoho_df['Payment Terms'] = 'Musgrave'
-    zoho_col_order = [
-        'Order number', 'Invoice Number', 'Subject', 'Date created', 'Shipping total amount',
-        'Currency Code', 'Account', 'item Tax', 'IteM Tax %', 'Trade', 'Channel', 'Branch',
-        'Shipping Tax Name', 'Shipping Tax percentage', 'LCS', 'Sales Person', 'Terms',
-        'Sales Order Number', 'Payment Terms'
-    ]
-    zoho_df = zoho_df[[c for c in zoho_col_order if c in zoho_df.columns] + [c for c in zoho_df.columns if c not in zoho_col_order]]
+
+    # Ensure all template columns exist (fill missing with blank)
+    for col in zoho_col_order:
+        if col not in zoho_df.columns:
+            zoho_df[col] = ""
+    # Now set DataFrame to exact template column order
+    zoho_df = zoho_df[zoho_col_order]
     buffer = BytesIO()
     zoho_df.to_excel(buffer, index=False)
     buffer.seek(0)
