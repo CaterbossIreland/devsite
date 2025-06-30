@@ -41,6 +41,19 @@ def download_supplier_csv():
     r.raise_for_status()
     return pd.read_csv(BytesIO(r.content))
 
+def upload_excel_file(file_id, df):
+    token = get_graph_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }
+    excel_buffer = BytesIO()
+    df.to_excel(excel_buffer, index=False)
+    excel_buffer.seek(0)
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
+    r = requests.put(url, headers=headers, data=excel_buffer.read())
+    r.raise_for_status()
+
 app = FastAPI()
 
 @app.get("/", response_class=HTMLResponse)
@@ -103,11 +116,12 @@ async def upload_orders_display(file: UploadFile = File(...)):
     # Prepare working copies of stock
     stock_left = {k: stock_map[k].copy() for k in stock_map}
 
-    # Outputs as {supplier: {order: [(sku, qty_to_supplier, qty_from_stock)]}}
     supplier_orders = {'Nortons': {}, 'Nisbets': {}}
     stock_ship_orders = {}
 
-    # Process each order line
+    nisbets_shipped = set()
+    nortons_shipped = set()
+
     for _, row in orders.iterrows():
         order_no = row['Order number']
         sku = row['Offer SKU']
@@ -115,21 +129,25 @@ async def upload_orders_display(file: UploadFile = File(...)):
         supplier = row['Supplier Name']
 
         if supplier not in ['Nortons', 'Nisbets']:
-            continue  # skip unknown suppliers
+            continue
 
-        # Check if we have any in stock for this supplier/SKU
         in_stock = stock_left[supplier].get(sku, 0)
         from_stock = min(qty, in_stock)
         to_supplier = qty - from_stock
 
-        # Record what is shipped from stock
+        # Record shipped from stock
         if from_stock > 0:
             if order_no not in stock_ship_orders:
                 stock_ship_orders[order_no] = []
             stock_ship_orders[order_no].append((sku, from_stock))
-            stock_left[supplier][sku] = in_stock - from_stock  # Reduce stock
+            stock_left[supplier][sku] = max(in_stock - from_stock, 0)
+            # Mark which file to update
+            if supplier == 'Nisbets':
+                nisbets_shipped.add(sku)
+            else:
+                nortons_shipped.add(sku)
 
-        # Record what needs to be ordered from supplier
+        # Record what to order
         if to_supplier > 0:
             if order_no not in supplier_orders[supplier]:
                 supplier_orders[supplier][order_no] = []
@@ -147,6 +165,25 @@ async def upload_orders_display(file: UploadFile = File(...)):
     nortons_out = format_order_block(supplier_orders['Nortons'], "Nortons orders")
     nisbets_out = format_order_block(supplier_orders['Nisbets'], "Nisbets orders")
     stock_out = format_order_block(stock_ship_orders, "stock shipments")
+
+    # Update stock DataFrames
+    for sku in nisbets_shipped:
+        if sku in nisbets_stock['Offer SKU'].values:
+            idx = nisbets_stock[nisbets_stock['Offer SKU'] == sku].index[0]
+            nisbets_stock.at[idx, 'Quantity'] = max(stock_left['Nisbets'].get(sku, 0), 0)
+    for sku in nortons_shipped:
+        if sku in nortons_stock['Offer SKU'].values:
+            idx = nortons_stock[nortons_stock['Offer SKU'] == sku].index[0]
+            nortons_stock.at[idx, 'Quantity'] = max(stock_left['Nortons'].get(sku, 0), 0)
+
+    # Overwrite the updated stock files on OneDrive
+    try:
+        if nisbets_shipped:
+            upload_excel_file(NISBETS_STOCK_FILE_ID, nisbets_stock)
+        if nortons_shipped:
+            upload_excel_file(NORTONS_STOCK_FILE_ID, nortons_stock)
+    except Exception as e:
+        return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
 
     html = f"""
     <style>
