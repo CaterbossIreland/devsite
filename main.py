@@ -14,27 +14,13 @@ NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
 
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
-DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
+DPD_TEMPLATE_PATH = "DPD.Import(1).csv"   # Use the correct file!
 
 app = FastAPI()
 latest_nisbets_csv = None
 latest_zoho_xlsx = None
 latest_dpd_csv = None
 dpd_error_report_html = ""
-
-# --- DPD TEMPLATE DEBUGGING ---
-print("\n====== DPD TEMPLATE DEBUGGING ======")
-print("os.getcwd():", os.getcwd())
-print("os.listdir():", os.listdir("."))
-if os.path.exists(DPD_TEMPLATE_PATH):
-    print(f"Found {DPD_TEMPLATE_PATH}, size: {os.path.getsize(DPD_TEMPLATE_PATH)} bytes")
-    with open(DPD_TEMPLATE_PATH, encoding="utf-8") as f:
-        for i in range(6):
-            print(f"Line {i+1}: {f.readline().strip()}")
-else:
-    print(f"NOT FOUND: {DPD_TEMPLATE_PATH}")
-print("====================================\n")
-# --- END DPD TEMPLATE DEBUGGING ---
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -76,6 +62,16 @@ def upload_excel_file(file_id, df):
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
     r = requests.put(url, headers=headers, data=excel_buffer.read())
     r.raise_for_status()
+
+def get_dpd_template_columns(template_path):
+    # Check delimiter in file
+    with open(template_path, "r", encoding="utf-8") as f:
+        sample = f.read(2048)
+    delimiter = "," if sample.count(",") > sample.count(";") else ";"
+    print(f"DEBUG: DPD template detected delimiter: '{delimiter}'")
+    df = pd.read_csv(template_path, header=None, delimiter=delimiter)
+    headers = list(df.iloc[1])
+    return df, headers, delimiter
 
 @app.get("/", response_class=HTMLResponse)
 async def main_upload_form():
@@ -140,6 +136,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
     stock_left = {k: stock_map[k].copy() for k in stock_map}
     supplier_orders = {'Nortons': {}, 'Nisbets': {}}
     stock_ship_orders = {}
+
     nisbets_shipped = set()
     nortons_shipped = set()
 
@@ -148,11 +145,14 @@ async def upload_orders_display(file: UploadFile = File(...)):
         sku = row['Offer SKU']
         qty = int(row['Quantity'])
         supplier = row['Supplier Name']
+
         if supplier not in ['Nortons', 'Nisbets']:
             continue
+
         in_stock = stock_left[supplier].get(sku, 0)
         from_stock = min(qty, in_stock)
         to_supplier = qty - from_stock
+
         if from_stock > 0:
             if order_no not in stock_ship_orders:
                 stock_ship_orders[order_no] = []
@@ -162,6 +162,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
                 nisbets_shipped.add(sku)
             else:
                 nortons_shipped.add(sku)
+
         if to_supplier > 0:
             if order_no not in supplier_orders[supplier]:
                 supplier_orders[supplier][order_no] = []
@@ -203,6 +204,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
         return HTMLResponse(f"<b>Failed to load Zoho template: {e}</b>", status_code=500)
 
     zoho_df = df.copy()
+    # Add your fields and set default values
     if 'Date created' in zoho_df.columns:
         zoho_df['Date created'] = zoho_df['Date created'].astype(str).str.split().str[0]
     zoho_df['Shipping total amount'] = 4.95
@@ -223,9 +225,12 @@ async def upload_orders_display(file: UploadFile = File(...)):
         zoho_df['Invoice Number'] = zoho_df['Order number']
         zoho_df['Subject'] = zoho_df['Order number']
     zoho_df['Payment Terms'] = 'Musgrave'
+
+    # Ensure all template columns exist (fill missing with blank)
     for col in zoho_col_order:
         if col not in zoho_df.columns:
             zoho_df[col] = ""
+    # Now set DataFrame to exact template column order
     zoho_df = zoho_df[zoho_col_order]
     buffer = BytesIO()
     zoho_df.to_excel(buffer, index=False)
@@ -253,38 +258,42 @@ async def upload_orders_display(file: UploadFile = File(...)):
         return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
 
     # ----------------- DPD LABEL CSV GENERATION --------------------
-    # Load and diagnose DPD template
     try:
-        dpd_template_df = pd.read_csv(DPD_TEMPLATE_PATH, header=None)
-        dpd_col_headers = list(dpd_template_df.iloc[1])
+        dpd_template_df, dpd_col_headers, dpd_delim = get_dpd_template_columns(DPD_TEMPLATE_PATH)
         dpd_mandatory_row = list(dpd_template_df.iloc[2])
     except Exception as e:
         dpd_col_headers = []
         dpd_mandatory_row = []
         latest_dpd_csv = None
         dpd_error_report_html = f"<b>Failed to load DPD template: {e}</b>"
+
     dpd_col_count = len(dpd_col_headers)
     print(f"DPD template columns: {dpd_col_headers}")
     print(f"DPD col count: {dpd_col_count}")
 
     exclude_orders = set(['X001111531-A', 'X001111392-A', 'X001111558-A', 'X001111425-A'])
     exclude_orders.update([x.replace('-A', '-B') for x in exclude_orders])
+
     orders_df = df.copy()
     print(f"Initial upload file rows: {len(orders_df)}")
     orders_df = orders_df[orders_df['Order number'].astype(str).str.endswith(('-A', '-B'))]
     print(f"After -A/-B filter: {len(orders_df)}")
     orders_df = orders_df[~orders_df['Order number'].isin(exclude_orders)].copy()
     print(f"After removing sample/fraud: {len(orders_df)}")
+
     orders_df['base_order'] = orders_df['Order number'].str.replace(r'(-A|-B)$', '', regex=True)
     orders_df['order_suffix'] = orders_df['Order number'].str.extract(r'-(A|B)$')
+
     final_order_rows = []
     used_orders = set()
     grouped = orders_df.groupby('base_order')
+
     for base, group in grouped:
         has_A = (group['order_suffix'] == 'A').any()
         has_B = (group['order_suffix'] == 'B').any()
         row_A = group[group['order_suffix'] == 'A'].iloc[0] if has_A else None
         row_B = group[group['order_suffix'] == 'B'].iloc[0] if has_B else None
+
         if has_A and has_B:
             row = row_A.copy()
             row['dpd_parcel_count'] = 2
@@ -303,6 +312,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
             if row['Order number'] not in used_orders:
                 final_order_rows.append(row)
                 used_orders.add(row['Order number'])
+
     dpd_final_df = pd.DataFrame(final_order_rows).drop_duplicates('Order number')
     print(f"Orders after dedupe: {len(dpd_final_df)}")
     print("First 5 orders after dedupe:", dpd_final_df.head().to_dict())
@@ -338,6 +348,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
     ]
     export_rows = []
     errors = []
+
     for _, row in dpd_final_df.iterrows():
         row_data = [''] * dpd_col_count
         missing = []
@@ -365,7 +376,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
 
     if export_rows:
         dpd_buffer = StringIO()
-        pd.DataFrame(export_rows).to_csv(dpd_buffer, header=False, index=False)
+        pd.DataFrame(export_rows).to_csv(dpd_buffer, header=False, index=False, sep=dpd_delim)
         latest_dpd_csv = dpd_buffer.getvalue().encode('utf-8')
         dpd_download_link = "<a href='/download_dpd_csv' download='DPD_Export.csv'><button class='copy-btn' style='background:#ff9900;right:auto;top:auto;position:relative;margin-bottom:1em;margin-left:1em;'>Download DPD CSV</button></a>"
     else:
