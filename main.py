@@ -14,7 +14,7 @@ NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
 
 # Path to the template file
-ZOHO_TEMPLATE_PATH = "/mnt/data/column format.xlsx"
+ZOHO_TEMPLATE_PATH = "column format.xlsx"
 
 app = FastAPI()
 latest_nisbets_csv = None
