@@ -15,6 +15,7 @@ NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLR
 
 app = FastAPI()
 latest_nisbets_csv = None
+latest_zoho_xlsx = None
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -76,12 +77,6 @@ async def main_upload_form():
         <button type="submit">Upload & Show Output</button>
       </form>
       <div id="results"></div>
-      <hr style='margin:2em 0;'>
-      <h3>Convert Orders File for Zoho Books Import</h3>
-      <form id="zohoForm" enctype="multipart/form-data">
-        <input name="file" type="file" accept=".xlsx" required>
-        <button type="submit" style="background:#0f9d58;margin-left:1em;">Convert & Download Zoho XLSX</button>
-      </form>
     </div>
     <div class="footer">Caterboss Orders &copy; 2025</div>
     <script>
@@ -94,29 +89,12 @@ async def main_upload_form():
       document.getElementById('results').innerHTML = html;
       window.scrollTo(0,document.body.scrollHeight);
     }
-    document.getElementById('zohoForm').onsubmit = async function(e){
-      e.preventDefault();
-      let formData = new FormData(this);
-      let res = await fetch('/convert_for_zoho', { method: 'POST', body: formData });
-      if(res.status == 200){
-        let blob = await res.blob();
-        let url = window.URL.createObjectURL(blob);
-        let a = document.createElement('a');
-        a.href = url;
-        a.download = 'zoho_orders.xlsx';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }else{
-        alert('Zoho XLSX conversion failed');
-      }
-    }
     </script>
     """
 
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
-    global latest_nisbets_csv
+    global latest_nisbets_csv, latest_zoho_xlsx
     try:
         df = pd.read_excel(file.file)
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
@@ -186,7 +164,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
     nisbets_out = format_order_block(supplier_orders['Nisbets'], "Nisbets orders")
     stock_out = format_order_block(stock_ship_orders, "stock shipments")
 
-    # --- NEW: Build Nisbets.csv
+    # --- Build Nisbets.csv
     nisbets_csv_rows = []
     for order, lines in supplier_orders['Nisbets'].items():
         for sku, qty in lines:
@@ -200,6 +178,41 @@ async def upload_orders_display(file: UploadFile = File(...)):
     else:
         latest_nisbets_csv = None
         download_link = ""
+
+    # --- Build Zoho XLSX (with column order)
+    zoho_df = df.copy()
+    if 'Date created' in zoho_df.columns:
+        zoho_df['Date created'] = zoho_df['Date created'].astype(str).str.split().str[0]
+    zoho_df['Shipping total amount'] = 4.95
+    zoho_df['Currency Code'] = 'EUR'
+    zoho_df['Account'] = 'Caterboss Sales'
+    zoho_df['item Tax'] = 'VAT'
+    zoho_df['IteM Tax %'] = 23
+    zoho_df['Trade'] = 'No'
+    zoho_df['Channel'] = 'Caterboss'
+    zoho_df['Branch'] = 'Head Office'
+    zoho_df['Shipping Tax Name'] = 'VAT'
+    zoho_df['Shipping Tax percentage'] = 23
+    zoho_df['LCS'] = 'false'
+    zoho_df['Sales Person'] = 'Musgraves Tonka'
+    zoho_df['Terms'] = '60'
+    zoho_df['Sales Order Number'] = 'MUSGRAVE'
+    if 'Order number' in zoho_df.columns:
+        zoho_df['Invoice Number'] = zoho_df['Order number']
+        zoho_df['Subject'] = zoho_df['Order number']
+    zoho_df['Payment Terms'] = 'Musgrave'
+    zoho_col_order = [
+        'Order number', 'Invoice Number', 'Subject', 'Date created', 'Shipping total amount',
+        'Currency Code', 'Account', 'item Tax', 'IteM Tax %', 'Trade', 'Channel', 'Branch',
+        'Shipping Tax Name', 'Shipping Tax percentage', 'LCS', 'Sales Person', 'Terms',
+        'Sales Order Number', 'Payment Terms'
+    ]
+    zoho_df = zoho_df[[c for c in zoho_col_order if c in zoho_df.columns] + [c for c in zoho_df.columns if c not in zoho_col_order]]
+    buffer = BytesIO()
+    zoho_df.to_excel(buffer, index=False)
+    buffer.seek(0)
+    latest_zoho_xlsx = buffer.getvalue()
+    zoho_download_link = "<a href='/download_zoho_xlsx' download='zoho_orders.xlsx'><button class='copy-btn' style='background:#0f9d58;right:auto;top:auto;position:relative;margin-bottom:1em;margin-left:1em;'>Download Zoho XLSX</button></a>"
 
     # Update stock DataFrames
     for sku in nisbets_shipped:
@@ -244,6 +257,9 @@ async def upload_orders_display(file: UploadFile = File(...)):
       <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('stockout').innerText)">Copy</button>
       <pre id="stockout">{stock_out}</pre>
     </div>
+    <div style='margin-top:2em;text-align:center;'>
+        {zoho_download_link}
+    </div>
     """
     return HTMLResponse(html)
 
@@ -257,41 +273,12 @@ async def download_nisbets_csv():
         headers={"Content-Disposition": "attachment; filename=Nisbets.csv"}
     )
 
-@app.post("/convert_for_zoho")
-async def convert_for_zoho(file: UploadFile = File(...)):
-    df = pd.read_excel(file.file)
-    if 'Date created' in df.columns:
-        df['Date created'] = df['Date created'].astype(str).str.split().str[0]
-    df['Shipping total amount'] = 4.95
-    df['Currency Code'] = 'EUR'
-    df['Account'] = 'Caterboss Sales'
-    df['item Tax'] = 'VAT'
-    df['IteM Tax %'] = 23
-    df['Trade'] = 'No'
-    df['Channel'] = 'Caterboss'
-    df['Branch'] = 'Head Office'
-    df['Shipping Tax Name'] = 'VAT'
-    df['Shipping Tax percentage'] = 23
-    df['LCS'] = 'false'
-    df['Sales Person'] = 'Musgraves Tonka'
-    df['Terms'] = '60'
-    df['Sales Order Number'] = 'MUSGRAVE'
-    if 'Order number' in df.columns:
-        df['Invoice Number'] = df['Order number']
-        df['Subject'] = df['Order number']
-    df['Payment Terms'] = 'Musgrave'
-    col_order = [
-        'Order number', 'Invoice Number', 'Subject', 'Date created', 'Shipping total amount',
-        'Currency Code', 'Account', 'item Tax', 'IteM Tax %', 'Trade', 'Channel', 'Branch',
-        'Shipping Tax Name', 'Shipping Tax percentage', 'LCS', 'Sales Person', 'Terms',
-        'Sales Order Number', 'Payment Terms'
-    ]
-    df = df[[c for c in col_order if c in df.columns] + [c for c in df.columns if c not in col_order]]
-    buffer = BytesIO()
-    df.to_excel(buffer, index=False)
-    buffer.seek(0)
+@app.get("/download_zoho_xlsx")
+async def download_zoho_xlsx():
+    if not latest_zoho_xlsx:
+        return HTMLResponse("<b>No Zoho XLSX generated in this session yet.</b>", status_code=404)
     return StreamingResponse(
-        buffer,
+        BytesIO(latest_zoho_xlsx),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=zoho_orders.xlsx"}
     )
