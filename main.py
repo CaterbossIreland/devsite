@@ -33,6 +33,40 @@ def download_supplier_csv():
 
 app = FastAPI()
 
+@app.get("/", response_class=HTMLResponse)
+async def main_upload_form():
+    return """
+    <style>
+    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
+    .container { max-width: 700px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+    h2 { margin-bottom: 0.5em; }
+    .upload-form { display: flex; flex-direction: column; gap: 1em;}
+    button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
+    button:hover { background: #2563eb; }
+    .footer { margin-top: 2em; text-align: center; color: #888;}
+    </style>
+    <div class="container">
+      <h2>Upload Orders File</h2>
+      <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
+        <input name="file" type="file" accept=".xlsx" required>
+        <button type="submit">Upload & Show Output</button>
+      </form>
+      <div id="results"></div>
+    </div>
+    <div class="footer">Caterboss Orders &copy; 2025</div>
+    <script>
+    document.getElementById('uploadForm').onsubmit = async function(e){
+      e.preventDefault();
+      let formData = new FormData(this);
+      document.getElementById('results').innerHTML = "<em>Processing...</em>";
+      let res = await fetch('/upload_orders/display', { method: 'POST', body: formData });
+      let html = await res.text();
+      document.getElementById('results').innerHTML = html;
+      window.scrollTo(0,document.body.scrollHeight);
+    }
+    </script>
+    """
+
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
     try:
@@ -53,24 +87,38 @@ async def upload_orders_display(file: UploadFile = File(...)):
     except Exception as e:
         return HTMLResponse(f"<b>Failed to map SKUs to suppliers:</b> {e}", status_code=500)
     try:
-        results = {}
-        for supplier in ['Nortons', 'Nisbets']:
+        def make_nice_block(supplier):
             supplier_orders = orders[orders['Supplier Name'] == supplier]
             grouped = supplier_orders.groupby('Order number')
             out = []
             for order, group in grouped:
-                out.append(f"Order Number: {order}\n\n")
+                out.append(f"Order Number: {order}\n")
                 for _, row in group.iterrows():
-                    out.append(f"·        {int(row['Quantity'])}x {row['Offer SKU']}\n\n")
-                out.append("------------------------------\n\n")
-            results[supplier] = "".join(out) if out else "No orders for this supplier."
+                    out.append(f"·        {int(row['Quantity'])}x {row['Offer SKU']}\n")
+                out.append("\n------------------------------\n\n")
+            return "".join(out) if out else "No orders for this supplier."
+
+        nout = make_nice_block('Nortons')
+        niout = make_nice_block('Nisbets')
         html = f"""
-        <h2>Nortons</h2>
-        <pre style='font-size:1.08em;background:#f9f9f9;padding:16px;line-height:1.6;'>{results['Nortons']}</pre>
-        <h2>Nisbets</h2>
-        <pre style='font-size:1.08em;background:#f9f9f9;padding:16px;line-height:1.6;'>{results['Nisbets']}</pre>
+        <style>
+        .out-card {{ background:#f7fafc; border-radius:10px; margin:1.5em 0; padding:1.3em 1.5em; box-shadow:0 2px 8px #0001; position:relative;}}
+        .copy-btn {{ position:absolute; right:24px; top:26px; background:#3b82f6; color:#fff; border:none; border-radius:4px; padding:5px 15px; cursor:pointer; font-size:1em;}}
+        .copy-btn:hover {{ background:#2563eb; }}
+        h3 {{ margin-top:0; }}
+        pre {{ white-space: pre-wrap; font-family:inherit; font-size:1.09em; margin:0;}}
+        </style>
+        <div class="out-card">
+          <h3>Nortons</h3>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nortonsout').innerText)">Copy</button>
+          <pre id="nortonsout">{nout}</pre>
+        </div>
+        <div class="out-card">
+          <h3>Nisbets</h3>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nisbetsout').innerText)">Copy</button>
+          <pre id="nisbetsout">{niout}</pre>
+        </div>
         """
         return HTMLResponse(html)
     except Exception as e:
         return HTMLResponse(f"<b>Failed during output formatting:</b> {e}", status_code=500)
-
