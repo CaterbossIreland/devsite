@@ -22,7 +22,6 @@ latest_zoho_xlsx = None
 latest_dpd_csv = None
 dpd_error_report_html = ""
 
-
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
@@ -103,6 +102,8 @@ async def upload_orders_display(file: UploadFile = File(...)):
     global latest_nisbets_csv, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
     try:
         df = pd.read_excel(file.file)
+        print(f"Total orders in upload: {len(df)}")
+        print("Order file columns:", list(df.columns))
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
     except Exception as e:
         return HTMLResponse(f"<b>Order file read failed or missing columns:</b> {e}", status_code=500)
@@ -247,7 +248,6 @@ async def upload_orders_display(file: UploadFile = File(...)):
         return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
 
     # ----------------- DPD LABEL CSV GENERATION --------------------
-    # Get DPD CSV template columns
     try:
         dpd_template_df = pd.read_csv(DPD_TEMPLATE_PATH, header=None)
         dpd_col_headers = list(dpd_template_df.iloc[1])
@@ -258,55 +258,45 @@ async def upload_orders_display(file: UploadFile = File(...)):
         latest_dpd_csv = None
         dpd_error_report_html = f"<b>Failed to load DPD template: {e}</b>"
 
-    # Begin filtering and processing for DPD export
-    dpd_rows = []
-    error_rows = []
-
-    # Remove the field number, header, mandatory from any DPD template row
     dpd_col_count = len(dpd_col_headers)
+    print(f"DPD template columns: {dpd_col_headers}")
+    print(f"DPD col count: {dpd_col_count}")
 
-    # Prepare set of order numbers to exclude (test/sample/fraud)
     exclude_orders = set(['X001111531-A', 'X001111392-A', 'X001111558-A', 'X001111425-A'])
-    # Also exclude their -B variants just in case
     exclude_orders.update([x.replace('-A', '-B') for x in exclude_orders])
 
     orders_df = df.copy()
-    # Only use order numbers ending with -A or -B
+    print(f"Initial upload file rows: {len(orders_df)}")
     orders_df = orders_df[orders_df['Order number'].astype(str).str.endswith(('-A', '-B'))]
-    # Exclude sample/fraud orders
+    print(f"After -A/-B filter: {len(orders_df)}")
     orders_df = orders_df[~orders_df['Order number'].isin(exclude_orders)].copy()
+    print(f"After removing sample/fraud: {len(orders_df)}")
 
-    # Extract base order numbers (everything except -A/-B)
     orders_df['base_order'] = orders_df['Order number'].str.replace(r'(-A|-B)$', '', regex=True)
     orders_df['order_suffix'] = orders_df['Order number'].str.extract(r'-(A|B)$')
 
-    # Deduplication logic
     final_order_rows = []
     used_orders = set()
     grouped = orders_df.groupby('base_order')
 
     for base, group in grouped:
-        # Check if both -A and -B exist
         has_A = (group['order_suffix'] == 'A').any()
         has_B = (group['order_suffix'] == 'B').any()
         row_A = group[group['order_suffix'] == 'A'].iloc[0] if has_A else None
         row_B = group[group['order_suffix'] == 'B'].iloc[0] if has_B else None
 
-        # If both exist, only keep -A, set Parcel Count to 2
         if has_A and has_B:
             row = row_A.copy()
             row['dpd_parcel_count'] = 2
             if row['Order number'] not in used_orders:
                 final_order_rows.append(row)
                 used_orders.add(row['Order number'])
-        # If only -A (and not duplicate), Parcel Count = 1
         elif has_A:
             row = row_A.copy()
             row['dpd_parcel_count'] = 1
             if row['Order number'] not in used_orders:
                 final_order_rows.append(row)
                 used_orders.add(row['Order number'])
-        # If only -B, include -B, Parcel Count = 1
         elif has_B:
             row = row_B.copy()
             row['dpd_parcel_count'] = 1
@@ -314,10 +304,10 @@ async def upload_orders_display(file: UploadFile = File(...)):
                 final_order_rows.append(row)
                 used_orders.add(row['Order number'])
 
-    # Now, dedupe on 'Order number'
     dpd_final_df = pd.DataFrame(final_order_rows).drop_duplicates('Order number')
+    print(f"Orders after dedupe: {len(dpd_final_df)}")
+    print("First 5 orders after dedupe:", dpd_final_df.head().to_dict())
 
-    # Map of DPD columns to fields from the input file and default values
     dpd_field_map = {
         0:  lambda row: row.get('Order number', ''),
         1:  lambda row: row.get('Shipping address company', ''),
@@ -338,7 +328,6 @@ async def upload_orders_display(file: UploadFile = File(...)):
         30: lambda row: 'N',         # Always
         31: lambda row: 'N',         # Always
     }
-    # Required fields for DPD: indices and human names
     required_fields = [
         (0, 'Order number'),
         (1, 'Shipping address company'),
@@ -361,13 +350,13 @@ async def upload_orders_display(file: UploadFile = File(...)):
         if missing:
             errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
             continue
-        # Fill mapped/default fields
         for i in range(dpd_col_count):
             if i in dpd_field_map:
                 row_data[i] = dpd_field_map[i](row)
         export_rows.append(row_data)
+    print(f"DPD orders to export: {len(export_rows)}")
+    print(f"DPD errors (missing fields): {len(errors)}")
 
-    # Compose error report
     if errors:
         dpd_error_report_html = "<div class='out-card' style='background:#ffefef;border:1px solid #e87272;'><h3>DPD Label Export: Excluded Orders</h3><table style='width:100%;border-collapse:collapse;'><tr><th>Order Number</th><th>Missing Field(s)</th></tr>"
         for e in errors:
@@ -376,7 +365,6 @@ async def upload_orders_display(file: UploadFile = File(...)):
     else:
         dpd_error_report_html = ""
 
-    # Output DPD CSV with NO headers, just data rows
     if export_rows:
         dpd_buffer = StringIO()
         pd.DataFrame(export_rows).to_csv(dpd_buffer, header=False, index=False)
@@ -385,8 +373,6 @@ async def upload_orders_display(file: UploadFile = File(...)):
     else:
         latest_dpd_csv = None
         dpd_download_link = "<span style='color:#e87272;'>No valid DPD export labels generated for this file.</span>"
-
-    # --- END DPD LOGIC ---
 
     html = f"""
     <style>
