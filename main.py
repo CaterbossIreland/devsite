@@ -1,4 +1,3 @@
-
 import os
 import requests
 import pandas as pd
@@ -15,7 +14,7 @@ NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
 
 app = FastAPI()
-latest_nisbets_csv = None  # Store CSV in memory for session
+latest_nisbets_csv = None
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -77,6 +76,12 @@ async def main_upload_form():
         <button type="submit">Upload & Show Output</button>
       </form>
       <div id="results"></div>
+      <hr style='margin:2em 0;'>
+      <h3>Convert Orders File for Zoho Books Import</h3>
+      <form id="zohoForm" enctype="multipart/form-data">
+        <input name="file" type="file" accept=".xlsx" required>
+        <button type="submit" style="background:#0f9d58;margin-left:1em;">Convert & Download Zoho XLSX</button>
+      </form>
     </div>
     <div class="footer">Caterboss Orders &copy; 2025</div>
     <script>
@@ -88,6 +93,23 @@ async def main_upload_form():
       let html = await res.text();
       document.getElementById('results').innerHTML = html;
       window.scrollTo(0,document.body.scrollHeight);
+    }
+    document.getElementById('zohoForm').onsubmit = async function(e){
+      e.preventDefault();
+      let formData = new FormData(this);
+      let res = await fetch('/convert_for_zoho', { method: 'POST', body: formData });
+      if(res.status == 200){
+        let blob = await res.blob();
+        let url = window.URL.createObjectURL(blob);
+        let a = document.createElement('a');
+        a.href = url;
+        a.download = 'zoho_orders.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }else{
+        alert('Zoho XLSX conversion failed');
+      }
     }
     </script>
     """
@@ -233,4 +255,43 @@ async def download_nisbets_csv():
         BytesIO(latest_nisbets_csv),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=Nisbets.csv"}
+    )
+
+@app.post("/convert_for_zoho")
+async def convert_for_zoho(file: UploadFile = File(...)):
+    df = pd.read_excel(file.file)
+    if 'Date created' in df.columns:
+        df['Date created'] = df['Date created'].astype(str).str.split().str[0]
+    df['Shipping total amount'] = 4.95
+    df['Currency Code'] = 'EUR'
+    df['Account'] = 'Caterboss Sales'
+    df['item Tax'] = 'VAT'
+    df['IteM Tax %'] = 23
+    df['Trade'] = 'No'
+    df['Channel'] = 'Caterboss'
+    df['Branch'] = 'Head Office'
+    df['Shipping Tax Name'] = 'VAT'
+    df['Shipping Tax percentage'] = 23
+    df['LCS'] = 'false'
+    df['Sales Person'] = 'Musgraves Tonka'
+    df['Terms'] = '60'
+    df['Sales Order Number'] = 'MUSGRAVE'
+    if 'Order number' in df.columns:
+        df['Invoice Number'] = df['Order number']
+        df['Subject'] = df['Order number']
+    df['Payment Terms'] = 'Musgrave'
+    col_order = [
+        'Order number', 'Invoice Number', 'Subject', 'Date created', 'Shipping total amount',
+        'Currency Code', 'Account', 'item Tax', 'IteM Tax %', 'Trade', 'Channel', 'Branch',
+        'Shipping Tax Name', 'Shipping Tax percentage', 'LCS', 'Sales Person', 'Terms',
+        'Sales Order Number', 'Payment Terms'
+    ]
+    df = df[[c for c in col_order if c in df.columns] + [c for c in df.columns if c not in col_order]]
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=zoho_orders.xlsx"}
     )
