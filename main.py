@@ -13,12 +13,15 @@ SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADD
 NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
 
-# Path to the template file
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
+DPD_TEMPLATE_PATH = "DPD_Export_File_Template.csv"
 
 app = FastAPI()
 latest_nisbets_csv = None
 latest_zoho_xlsx = None
+latest_dpd_csv = None
+dpd_error_report_html = ""
+
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -97,7 +100,7 @@ async def main_upload_form():
 
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
-    global latest_nisbets_csv, latest_zoho_xlsx
+    global latest_nisbets_csv, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
     try:
         df = pd.read_excel(file.file)
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
@@ -243,6 +246,148 @@ async def upload_orders_display(file: UploadFile = File(...)):
             return HTMLResponse("<b>Stock file update failed: File is open or locked in Excel.<br>Please close the file everywhere and try again in a minute.</b>", status_code=423)
         return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
 
+    # ----------------- DPD LABEL CSV GENERATION --------------------
+    # Get DPD CSV template columns
+    try:
+        dpd_template_df = pd.read_csv(DPD_TEMPLATE_PATH, header=None)
+        dpd_col_headers = list(dpd_template_df.iloc[1])
+        dpd_mandatory_row = list(dpd_template_df.iloc[2])
+    except Exception as e:
+        dpd_col_headers = []
+        dpd_mandatory_row = []
+        latest_dpd_csv = None
+        dpd_error_report_html = f"<b>Failed to load DPD template: {e}</b>"
+
+    # Begin filtering and processing for DPD export
+    dpd_rows = []
+    error_rows = []
+
+    # Remove the field number, header, mandatory from any DPD template row
+    dpd_col_count = len(dpd_col_headers)
+
+    # Prepare set of order numbers to exclude (test/sample/fraud)
+    exclude_orders = set(['X001111531-A', 'X001111392-A', 'X001111558-A', 'X001111425-A'])
+    # Also exclude their -B variants just in case
+    exclude_orders.update([x.replace('-A', '-B') for x in exclude_orders])
+
+    orders_df = df.copy()
+    # Only use order numbers ending with -A or -B
+    orders_df = orders_df[orders_df['Order number'].astype(str).str.endswith(('-A', '-B'))]
+    # Exclude sample/fraud orders
+    orders_df = orders_df[~orders_df['Order number'].isin(exclude_orders)].copy()
+
+    # Extract base order numbers (everything except -A/-B)
+    orders_df['base_order'] = orders_df['Order number'].str.replace(r'(-A|-B)$', '', regex=True)
+    orders_df['order_suffix'] = orders_df['Order number'].str.extract(r'-(A|B)$')
+
+    # Deduplication logic
+    final_order_rows = []
+    used_orders = set()
+    grouped = orders_df.groupby('base_order')
+
+    for base, group in grouped:
+        # Check if both -A and -B exist
+        has_A = (group['order_suffix'] == 'A').any()
+        has_B = (group['order_suffix'] == 'B').any()
+        row_A = group[group['order_suffix'] == 'A'].iloc[0] if has_A else None
+        row_B = group[group['order_suffix'] == 'B'].iloc[0] if has_B else None
+
+        # If both exist, only keep -A, set Parcel Count to 2
+        if has_A and has_B:
+            row = row_A.copy()
+            row['dpd_parcel_count'] = 2
+            if row['Order number'] not in used_orders:
+                final_order_rows.append(row)
+                used_orders.add(row['Order number'])
+        # If only -A (and not duplicate), Parcel Count = 1
+        elif has_A:
+            row = row_A.copy()
+            row['dpd_parcel_count'] = 1
+            if row['Order number'] not in used_orders:
+                final_order_rows.append(row)
+                used_orders.add(row['Order number'])
+        # If only -B, include -B, Parcel Count = 1
+        elif has_B:
+            row = row_B.copy()
+            row['dpd_parcel_count'] = 1
+            if row['Order number'] not in used_orders:
+                final_order_rows.append(row)
+                used_orders.add(row['Order number'])
+
+    # Now, dedupe on 'Order number'
+    dpd_final_df = pd.DataFrame(final_order_rows).drop_duplicates('Order number')
+
+    # Map of DPD columns to fields from the input file and default values
+    dpd_field_map = {
+        0:  lambda row: row.get('Order number', ''),
+        1:  lambda row: row.get('Shipping address company', ''),
+        2:  lambda row: row.get('Shipping address company', ''),
+        3:  lambda row: row.get('Shipping address street 1', ''),
+        4:  lambda row: row.get('Shipping address street 2', ''),
+        5:  lambda row: row.get('Shipping address city', ''),
+        6:  lambda row: row.get('Shipping address state', ''),
+        7:  lambda row: row.get('Shipping address zip', ''),
+        8:  lambda row: '372',       # Always
+        9:  lambda row: str(row.get('dpd_parcel_count', 1)),
+        10: lambda row: '10',        # Always
+        11: lambda row: 'N',         # Always
+        12: lambda row: 'O',         # Always
+        23: lambda row: row.get('Shipping address first name', ''),
+        24: lambda row: row.get('Shipping address phone', ''),
+        28: lambda row: '8130L3',    # Always
+        30: lambda row: 'N',         # Always
+        31: lambda row: 'N',         # Always
+    }
+    # Required fields for DPD: indices and human names
+    required_fields = [
+        (0, 'Order number'),
+        (1, 'Shipping address company'),
+        (3, 'Shipping address street 1'),
+        (5, 'Shipping address city'),
+        (7, 'Shipping address zip'),
+        (23, 'Shipping address first name'),
+        (24, 'Shipping address phone'),
+    ]
+    export_rows = []
+    errors = []
+
+    for _, row in dpd_final_df.iterrows():
+        row_data = [''] * dpd_col_count
+        missing = []
+        for idx, fname in required_fields:
+            value = dpd_field_map[idx](row)
+            if not value or pd.isnull(value) or str(value).strip() == '':
+                missing.append(fname)
+        if missing:
+            errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
+            continue
+        # Fill mapped/default fields
+        for i in range(dpd_col_count):
+            if i in dpd_field_map:
+                row_data[i] = dpd_field_map[i](row)
+        export_rows.append(row_data)
+
+    # Compose error report
+    if errors:
+        dpd_error_report_html = "<div class='out-card' style='background:#ffefef;border:1px solid #e87272;'><h3>DPD Label Export: Excluded Orders</h3><table style='width:100%;border-collapse:collapse;'><tr><th>Order Number</th><th>Missing Field(s)</th></tr>"
+        for e in errors:
+            dpd_error_report_html += f"<tr><td>{e['Order number']}</td><td>{e['Missing']}</td></tr>"
+        dpd_error_report_html += "</table></div>"
+    else:
+        dpd_error_report_html = ""
+
+    # Output DPD CSV with NO headers, just data rows
+    if export_rows:
+        dpd_buffer = StringIO()
+        pd.DataFrame(export_rows).to_csv(dpd_buffer, header=False, index=False)
+        latest_dpd_csv = dpd_buffer.getvalue().encode('utf-8')
+        dpd_download_link = "<a href='/download_dpd_csv' download='DPD_Export.csv'><button class='copy-btn' style='background:#ff9900;right:auto;top:auto;position:relative;margin-bottom:1em;margin-left:1em;'>Download DPD CSV</button></a>"
+    else:
+        latest_dpd_csv = None
+        dpd_download_link = "<span style='color:#e87272;'>No valid DPD export labels generated for this file.</span>"
+
+    # --- END DPD LOGIC ---
+
     html = f"""
     <style>
     .out-card {{ background:#f7fafc; border-radius:10px; margin:1.5em 0; padding:1.3em 1.5em; box-shadow:0 2px 8px #0001; position:relative;}}
@@ -268,8 +413,9 @@ async def upload_orders_display(file: UploadFile = File(...)):
       <pre id="stockout">{stock_out}</pre>
     </div>
     <div style='margin-top:2em;text-align:center;'>
-        {zoho_download_link}
+        {zoho_download_link}<br>{dpd_download_link}
     </div>
+    {dpd_error_report_html}
     """
     return HTMLResponse(html)
 
@@ -291,4 +437,14 @@ async def download_zoho_xlsx():
         BytesIO(latest_zoho_xlsx),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=zoho_orders.xlsx"}
+    )
+
+@app.get("/download_dpd_csv")
+async def download_dpd_csv():
+    if not latest_dpd_csv:
+        return HTMLResponse("<b>No DPD CSV generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(latest_dpd_csv),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
     )
