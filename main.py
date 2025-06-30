@@ -7,12 +7,12 @@ app = FastAPI()
 @app.post("/upload_orders/", response_class=PlainTextResponse)
 async def upload_orders(file: UploadFile = File(...)):
     df = pd.read_excel(file.file)
-    # Select only the needed columns, drop blanks
-    out = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
-    lines = [
-        f"{row['Order number']}, {row['Offer SKU']}, {row['Quantity']}"
-        for _, row in out.iterrows()
-    ]
-    # Optional: add a header row if you want
-    # lines.insert(0, "Order number, Offer SKU, Quantity")
-    return "\n".join(lines)
+    df = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
+    grouped = df.groupby('Order number')
+    result = []
+    for order, group in grouped:
+        result.append(f"Order Number: {order}\n")
+        for _, row in group.iterrows():
+            result.append(f"·        {int(row['Quantity'])}x {row['Offer SKU']}\n")
+        result.append("\n------------------------------\n")
+    return "".join(result)
