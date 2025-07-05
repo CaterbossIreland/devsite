@@ -1,4 +1,5 @@
-# ========== SECTION 1: Imports, Configs, App Setup ==========
+# ========== SECTION 1: Imports, Configs, App Setup, Helper Functions ==========
+
 import os
 import requests
 import pandas as pd
@@ -24,11 +25,19 @@ ORDER_HISTORY_FILE_ID = os.getenv("ORDER_HISTORY_FILE_ID", "01YTGSV5BZ2T4AVNGCU5
 SKU_MAX_FILE_ID = os.getenv("SKU_MAX_FILE_ID", "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647")
 UPLOAD_LOG_FILE_ID = os.getenv("UPLOAD_LOG_FILE_ID", "01YTGSV5GJJRXXXWMWPRHKYWSK4K4P3WLC")
 
+# --- App & Templates ---
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key="ultra-secret-CHANGE-THIS")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
-# ========== SECTION 2: Helper Functions ==========
+
+# --- Globals for "current session" files (for supplier downloads etc) ---
+latest_nisbets_csv = None
+latest_zoho_xlsx = None
+latest_dpd_csv = None
+dpd_error_report_html = ""
+
+# --- Helper functions for Graph API file ops ---
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -90,7 +99,9 @@ def download_json_file(file_id):
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
     r = requests.get(url, headers=headers)
     r.raise_for_status()
-    return json.loads(r.content.decode())
+    if not r.content or r.content.strip() in [b'', b'{}']:
+        return {}
+    return json.loads(r.content.decode("utf-8"))
 
 def upload_json_file(file_id, data):
     token = get_graph_access_token()
@@ -99,26 +110,44 @@ def upload_json_file(file_id, data):
         "Content-Type": "application/json"
     }
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
-    r = requests.put(url, headers=headers, data=json.dumps(data))
+    r = requests.put(url, headers=headers, data=json.dumps(data).encode("utf-8"))
     r.raise_for_status()
 
-def append_upload_log(filename, dt):
+# -- Helpers for max SKU per parcel --
+def load_max_per_parcel_map():
+    return download_json_file(SKU_MAX_FILE_ID)
+def save_max_per_parcel_map(data):
+    upload_json_file(SKU_MAX_FILE_ID, data)
+
+# -- Helper for Upload Log --
+def append_upload_log(log_dict):
     try:
         log = download_json_file(UPLOAD_LOG_FILE_ID)
-        if not isinstance(log, list): log = []
     except Exception:
         log = []
-    log.append({"filename": filename, "datetime": dt})
+    log.append(log_dict)
     upload_json_file(UPLOAD_LOG_FILE_ID, log)
 
-def get_upload_log():
-    try:
-        return download_json_file(UPLOAD_LOG_FILE_ID)
-    except Exception:
-        return []
+# -- Helper for restoring previous stock version --
+def restore_prev_version(file_id):
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    versions = r.json().get('value', [])
+    if len(versions) < 2:
+        return False, "No previous version found."
+    prev_version_id = versions[1]['id']
+    restore_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions/{prev_version_id}/restoreVersion"
+    r2 = requests.post(restore_url, headers=headers)
+    if r2.status_code == 204:
+        return True, "Restored previous version."
+    else:
+        return False, f"Failed to restore: {r2.text}"
 
-# ========== END SECTION 2 ==========
-# ========== SECTION 3: Admin Routes ==========
+# ========== END SECTION 1 ==========
+# ========== SECTION 2: Admin Routes, Dashboard, Undo, Max Per Parcel, Upload Log ==========
 
 ADMIN_PASSWORD = "Orendaent101!"
 
@@ -143,108 +172,132 @@ def admin_logout(request: Request):
     return RedirectResponse(url="/admin/login", status_code=302)
 
 @app.get("/admin")
-def admin_dashboard(request: Request):
+def admin_dashboard(request: Request, top: Optional[int] = 10):
     if not is_admin(request):
         return RedirectResponse(url="/admin/login", status_code=302)
     try:
         order_history = download_csv_file(ORDER_HISTORY_FILE_ID)
     except Exception:
         order_history = pd.DataFrame()
+    if not order_history.empty:
+        order_history['Order Date'] = pd.to_datetime(order_history.get('Order Date', pd.NaT), errors='coerce')
+        order_history['Customer Name'] = order_history.get('Customer Name', "")
+        order_history['Quantity'] = pd.to_numeric(order_history.get('Quantity', 0), errors='coerce').fillna(0)
     total_orders = len(order_history)
-    total_qty = order_history['Quantity'].sum() if not order_history.empty else 0
-    order_history['Order Date'] = pd.to_datetime(order_history['Order Date'], errors='coerce')
-    order_history['Customer Name'] = order_history.get('Customer Name', "")
-    # Top SKUs and customers (top10 default, can extend)
-    top_skus = order_history.groupby('Offer SKU')['Quantity'].sum().reset_index().sort_values("Quantity", ascending=False).head(10)
-    top_customers = order_history.groupby('Customer Name')['Quantity'].sum().reset_index().sort_values("Quantity", ascending=False).head(10)
+    total_qty = int(order_history['Quantity'].sum()) if not order_history.empty else 0
+    total_customers = order_history['Customer Name'].nunique() if not order_history.empty else 0
+    top_n = int(top) if top else 10
+    top_skus = (order_history.groupby('Offer SKU')['Quantity'].sum()
+                .sort_values(ascending=False).reset_index().head(top_n).values.tolist() if not order_history.empty else [])
+    top_customers = (order_history.groupby('Customer Name')['Quantity'].sum()
+                     .sort_values(ascending=False).reset_index().head(top_n).values.tolist() if not order_history.empty else [])
+    total_sales = total_qty * 1  # adjust with your price logic
+    # Add more stats as needed
+
+    # --- Read upload log ---
+    try:
+        upload_log = download_json_file(UPLOAD_LOG_FILE_ID)
+    except Exception:
+        upload_log = []
+
     return templates.TemplateResponse(
         "admin.html",
         {
             "request": request,
             "total_orders": total_orders,
             "total_qty": total_qty,
-            "top_skus": top_skus.values.tolist(),
-            "top_customers": top_customers.values.tolist(),
+            "total_customers": total_customers,
+            "top_skus": top_skus,
+            "top_customers": top_customers,
+            "upload_log": upload_log,
+            "top_n": top_n,
         }
     )
 
-# --- Admin settings: Undo last order, max SKU per parcel ---
-@app.get("/admin/settings")
-def admin_settings(request: Request):
+@app.post("/undo_stock_update")
+async def undo_stock_update(request: Request):
     if not is_admin(request):
         return RedirectResponse(url="/admin/login", status_code=302)
-    # Show current max per parcel settings
-    try:
-        max_settings = download_json_file(SKU_MAX_FILE_ID)
-    except Exception:
-        max_settings = {}
-    return templates.TemplateResponse("admin_settings.html", {"request": request, "sku_max": max_settings})
+    msgs = []
+    for label, file_id in [("Nisbets", NISBETS_STOCK_FILE_ID), ("Nortons", NORTONS_STOCK_FILE_ID)]:
+        success, msg = restore_prev_version(file_id)
+        msgs.append(f"<b>{label}:</b> {msg}")
+    return HTMLResponse("<br>".join(msgs))
 
-@app.post("/admin/set_max_per_parcel")
+@app.post("/set_max_per_parcel")
 async def set_max_per_parcel(request: Request, sku: str = Form(...), max_qty: int = Form(...)):
     if not is_admin(request):
         return RedirectResponse(url="/admin/login", status_code=302)
-    try:
-        settings = download_json_file(SKU_MAX_FILE_ID)
-    except Exception:
-        settings = {}
-    settings[sku] = max_qty
-    upload_json_file(SKU_MAX_FILE_ID, settings)
-    return RedirectResponse(url="/admin/settings", status_code=302)
+    sku = sku.strip()
+    max_per_parcel_map = load_max_per_parcel_map()
+    max_per_parcel_map[sku] = int(max_qty)
+    save_max_per_parcel_map(max_per_parcel_map)
+    return HTMLResponse(f"<b>{sku}:</b> max per parcel set to <b>{max_qty}</b> (saved).")
 
-@app.post("/admin/undo_last_order")
-async def undo_last_order(request: Request):
-    if not is_admin(request):
-        return RedirectResponse(url="/admin/login", status_code=302)
-    # Remove last upload from OrderHistory (remove latest set of rows)
-    order_hist = download_csv_file(ORDER_HISTORY_FILE_ID)
-    upload_log = get_upload_log()
-    if upload_log:
-        last = upload_log[-1]
-        last_filename = last['filename']
-        # If possible, filter out those orders by a unique column (e.g. batch/timestamp)
-        # For now, drop most recent N rows = count in that batch
-        # TODO: improve to be more robust for real use
-        order_hist = order_hist.iloc[:-len(order_hist[order_hist['Source Filename'] == last_filename])]
-        upload_csv_file(ORDER_HISTORY_FILE_ID, order_hist)
-        upload_log = upload_log[:-1]
-        upload_json_file(UPLOAD_LOG_FILE_ID, upload_log)
-    return RedirectResponse(url="/admin/settings", status_code=302)
-
-# --- Upload history route ---
-@app.get("/admin/upload_history")
+@app.get("/upload_history")
 def upload_history(request: Request):
     if not is_admin(request):
         return RedirectResponse(url="/admin/login", status_code=302)
-    log = get_upload_log()
-    return templates.TemplateResponse("upload_history.html", {"request": request, "upload_log": log})
+    try:
+        upload_log = download_json_file(UPLOAD_LOG_FILE_ID)
+    except Exception:
+        upload_log = []
+    rows = "".join(
+        f"<tr><td>{x.get('filename')}</td><td>{x.get('upload_time')}</td></tr>"
+        for x in upload_log
+    )
+    html = f"""
+    <h2>Order File Upload History</h2>
+    <table border=1 cellpadding=6>
+        <tr><th>Filename</th><th>Uploaded at</th></tr>
+        {rows}
+    </table>
+    """
+    return HTMLResponse(html)
 
-# ========== END SECTION 3 ==========
-# ========== SECTION 4: Main Upload, Order, and Supplier File Logic ==========
+# ========== END SECTION 2 ==========
+# ========== SECTION 3: Main Upload Form, Order Processing, OrderHistory, Downloads ==========
+
+from datetime import datetime
 
 @app.get("/", response_class=HTMLResponse)
-def main_upload_form(request: Request):
-    return templates.TemplateResponse("main_upload.html", {"request": request})
+async def main_upload_form(request: Request):
+    max_per_parcel_map = load_max_per_parcel_map()
+    rules_html = ""
+    if max_per_parcel_map:
+        rules_html = "<div style='background:#eef4fc;padding:1em 1.5em;border-radius:8px;margin-bottom:1em;'><b>Current max per parcel settings:</b><ul>"
+        for sku, maxqty in max_per_parcel_map.items():
+            rules_html += f"<li><b>{sku}</b>: {maxqty}</li>"
+        rules_html += "</ul></div>"
+    return templates.TemplateResponse("main_upload.html", {"request": request, "rules_html": rules_html})
 
 @app.post("/upload_orders/display")
 async def upload_orders_display(request: Request, file: UploadFile = File(...)):
+    # --- Log upload ---
+    try:
+        upload_log = download_json_file(UPLOAD_LOG_FILE_ID)
+    except Exception:
+        upload_log = []
+    upload_log.append({
+        "filename": file.filename,
+        "upload_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    upload_json_file(UPLOAD_LOG_FILE_ID, upload_log)
+
+    max_per_parcel_map = load_max_per_parcel_map()
     try:
         df = pd.read_excel(file.file) if file.filename.lower().endswith("xlsx") else pd.read_csv(file.file)
-        if not set(['Order number', 'Offer SKU', 'Quantity', 'Customer Name']).issubset(df.columns):
-            raise Exception("Missing columns: must have 'Order number', 'Offer SKU', 'Quantity', 'Customer Name'")
-        orders = df[['Order number', 'Offer SKU', 'Quantity', 'Customer Name']].dropna()
+        orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
     except Exception as e:
         return HTMLResponse(f"<b>Order file read failed or missing columns:</b> {e}", status_code=500)
 
-    # --- SUPPLIER LOOKUP ---
     try:
-        supplier_df = download_csv_file(SUPPLIER_FILE_ID)
+        supplier_df = download_supplier_csv()
         sku_to_supplier = dict(zip(supplier_df['Offer SKU'], supplier_df['Supplier Name']))
         orders['Supplier Name'] = orders['Offer SKU'].map(sku_to_supplier)
     except Exception as e:
         return HTMLResponse(f"<b>Supplier fetch/mapping failed:</b> {e}", status_code=500)
 
-    # --- STOCK LOOKUP ---
     try:
         nisbets_stock = download_excel_file(NISBETS_STOCK_FILE_ID)
         nortons_stock = download_excel_file(NORTONS_STOCK_FILE_ID)
@@ -255,156 +308,187 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     except Exception as e:
         return HTMLResponse(f"<b>Stock file fetch failed:</b> {e}", status_code=500)
 
-    # --- MAX SKUS PER PARCEL RULE ---
+    stock_left = {k: stock_map[k].copy() for k in stock_map}
+    supplier_orders = {'Nortons': {}, 'Nisbets': {}}
+    stock_ship_orders = {}
+    nisbets_shipped = set()
+    nortons_shipped = set()
+
+    for _, row in orders.iterrows():
+        order_no = row['Order number']
+        sku = row['Offer SKU']
+        qty = int(row['Quantity'])
+        supplier = row['Supplier Name']
+        if supplier not in ['Nortons', 'Nisbets']:
+            continue
+        in_stock = stock_left[supplier].get(sku, 0)
+        from_stock = min(qty, in_stock)
+        to_supplier = qty - from_stock
+
+        if from_stock > 0:
+            if order_no not in stock_ship_orders:
+                stock_ship_orders[order_no] = []
+            stock_ship_orders[order_no].append((sku, from_stock))
+            stock_left[supplier][sku] = max(in_stock - from_stock, 0)
+            if supplier == 'Nisbets':
+                nisbets_shipped.add(sku)
+            else:
+                nortons_shipped.add(sku)
+
+        if to_supplier > 0:
+            if order_no not in supplier_orders[supplier]:
+                supplier_orders[supplier][order_no] = []
+            supplier_orders[supplier][order_no].append((sku, to_supplier))
+
+    def format_order_block(order_dict, title):
+        out = []
+        for order, lines in order_dict.items():
+            out.append(f"Order Number: {order}\n")
+            for sku, qty in lines:
+                out.append(f"·        {qty}x {sku}\n")
+            out.append("\n------------------------------\n\n")
+        return "".join(out) if out else f"No {title.lower()}."
+
+    nortons_out = format_order_block(supplier_orders['Nortons'], "Nortons orders")
+    nisbets_out = format_order_block(supplier_orders['Nisbets'], "Nisbets orders")
+    stock_out = format_order_block(stock_ship_orders, "stock shipments")
+
+    # --- Build Nisbets.csv
+    nisbets_csv_rows = []
+    for order, lines in supplier_orders['Nisbets'].items():
+        for sku, qty in lines:
+            nisbets_csv_rows.append({'Order Number': order, 'Offer SKU': sku, 'Quantity': qty})
+    if nisbets_csv_rows:
+        nisbets_csv_df = pd.DataFrame(nisbets_csv_rows)
+        csv_buffer = StringIO()
+        nisbets_csv_df.to_csv(csv_buffer, index=False)
+        request.app.state.latest_nisbets_csv = csv_buffer.getvalue().encode('utf-8')
+        download_link = "<a href='/download_nisbets_csv' download='Nisbets.csv'><button class='copy-btn' style='right:auto;top:auto;position:relative;margin-bottom:1em;'>Download Nisbets CSV</button></a>"
+    else:
+        request.app.state.latest_nisbets_csv = None
+        download_link = ""
+
+    # --- Update stock DataFrames
+    for sku in nisbets_shipped:
+        if sku in nisbets_stock['Offer SKU'].values:
+            idx = nisbets_stock[nisbets_stock['Offer SKU'] == sku].index[0]
+            nisbets_stock.at[idx, 'Quantity'] = max(stock_left['Nisbets'].get(sku, 0), 0)
+    for sku in nortons_shipped:
+        if sku in nortons_stock['Offer SKU'].values:
+            idx = nortons_stock[nortons_stock['Offer SKU'] == sku].index[0]
+            nortons_stock.at[idx, 'Quantity'] = max(stock_left['Nortons'].get(sku, 0), 0)
     try:
-        sku_max_settings = download_json_file(SKU_MAX_FILE_ID)
-    except Exception:
-        sku_max_settings = {}
+        if nisbets_shipped:
+            upload_excel_file(NISBETS_STOCK_FILE_ID, nisbets_stock)
+        if nortons_shipped:
+            upload_excel_file(NORTONS_STOCK_FILE_ID, nortons_stock)
+    except Exception as e:
+        if "423" in str(e):
+            return HTMLResponse("<b>Stock file update failed: File is open or locked in Excel.<br>Please close the file everywhere and try again in a minute.</b>", status_code=423)
+        return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
 
-    def calc_need_to_order(row):
-        stock = stock_map.get(row['Supplier Name'], {}).get(row['Offer SKU'], 0)
-        max_per = sku_max_settings.get(row['Offer SKU'])
-        qty = row['Quantity']
-        if max_per and qty > max_per:
-            return qty  # For now just show full; can split across parcels in label step
-        return max(0, qty - stock)
-
-    orders['Need To Order'] = orders.apply(calc_need_to_order, axis=1)
-    orders = orders[orders['Need To Order'] > 0]
-
-    # --- SPLIT FILES FOR SUPPLIERS ---
-    for supplier in ['Nisbets', 'Nortons']:
-        supplier_orders = orders[orders['Supplier Name'] == supplier]
-        if not supplier_orders.empty:
-            filename = f"{supplier}_Order_List.xlsx"
-            output = BytesIO()
-            supplier_orders[['Order number', 'Offer SKU', 'Quantity', 'Customer Name']].to_excel(output, index=False)
-            output.seek(0)
-            # [Optional: save for download, or email as needed]
-
-    # --- DPD LABEL PREP: GROUP PARCELS ---
-    orders['Parcel Count'] = 1
-    dpd_labels = orders.groupby('Order number').agg({
-        'Parcel Count': 'sum',
-        'Customer Name': 'first'
-    }).reset_index()
-    # [Optionally allow CSV download]
-
-    # --- SAVE TO ORDER HISTORY CSV + UPLOAD LOG ---
+    # --- Update OrderHistory.csv (append) ---
     try:
         old_hist = download_csv_file(ORDER_HISTORY_FILE_ID)
         new_hist = pd.concat([old_hist, df], ignore_index=True)
         upload_csv_file(ORDER_HISTORY_FILE_ID, new_hist)
-        append_upload_log(file.filename)
     except Exception:
         upload_csv_file(ORDER_HISTORY_FILE_ID, df)
-        append_upload_log(file.filename)
 
-    return HTMLResponse("<b>Order processed, supplier orders created, and order history updated!</b>")
+    html = f"""
+    <style>
+    .out-card {{ background:#f7fafc; border-radius:10px; margin:1.5em 0; padding:1.3em 1.5em; box-shadow:0 2px 8px #0001; position:relative;}}
+    .copy-btn {{ position:absolute; right:24px; top:26px; background:#3b82f6; color:#fff; border:none; border-radius:4px; padding:5px 15px; cursor:pointer; font-size:1em;}}
+    .copy-btn:hover {{ background:#2563eb; }}
+    h3 {{ margin-top:0; }}
+    pre {{ white-space: pre-wrap; font-family:inherit; font-size:1.09em; margin:0;}}
+    </style>
+    <div class="out-card">
+      <h3>Nortons (Order from Supplier)</h3>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nortonsout').innerText)">Copy</button>
+      <pre id="nortonsout">{nortons_out}</pre>
+    </div>
+    <div class="out-card">
+      <h3>Nisbets (Order from Supplier)</h3>
+      {download_link}
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nisbetsout').innerText)">Copy</button>
+      <pre id="nisbetsout">{nisbets_out}</pre>
+    </div>
+    <div class="out-card">
+      <h3>Ship from Stock</h3>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('stockout').innerText)">Copy</button>
+      <pre id="stockout">{stock_out}</pre>
+    </div>
+    <div style='margin-top:2em;text-align:center;'>
+        {download_link}
+    </div>
+    """
+    return HTMLResponse(html)
 
-# --- DPD Label CSV Download Endpoint ---
-@app.get("/dpd_labels.csv")
-def dpd_labels_csv():
-    orders = download_csv_file(ORDER_HISTORY_FILE_ID)
-    orders['Parcel Count'] = 1
-    dpd_labels = orders.groupby('Order number').agg({
-        'Parcel Count': 'sum',
-        'Customer Name': 'first'
-    }).reset_index()
-    csv_buffer = StringIO()
-    dpd_labels.to_csv(csv_buffer, index=False)
-    csv_buffer.seek(0)
-    return StreamingResponse(csv_buffer, media_type='text/csv', headers={"Content-Disposition": "attachment; filename=dpd_labels.csv"})
+@app.get("/download_nisbets_csv")
+async def download_nisbets_csv(request: Request):
+    data = getattr(request.app.state, 'latest_nisbets_csv', None)
+    if not data:
+        return HTMLResponse("<b>No Nisbets CSV generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=Nisbets.csv"}
+    )
 
-# --- SUPPLIER ORDER XLSX DOWNLOAD ---
+# ========== END SECTION 3 ==========
+# ========== SECTION 4: Utility Endpoints & Downloads ==========
+
+# Helper: Download OrderHistory as CSV (for backup or admin)
+@app.get("/admin/download_orderhistory")
+def download_orderhistory():
+    try:
+        df = download_csv_file(ORDER_HISTORY_FILE_ID)
+    except Exception:
+        return HTMLResponse("<b>No order history found.</b>", status_code=404)
+    buffer = StringIO()
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=OrderHistory.csv"})
+
+# Download supplier order file by supplier name (xlsx)
 @app.get("/supplier_orders/{supplier}.xlsx")
 def supplier_order_xlsx(supplier: str):
-    orders = download_csv_file(ORDER_HISTORY_FILE_ID)
-    supplier_orders = orders[orders['Supplier Name'].str.lower() == supplier.lower()]
+    try:
+        orders = download_csv_file(ORDER_HISTORY_FILE_ID)
+    except Exception:
+        return HTMLResponse("<b>No OrderHistory found.</b>", status_code=404)
+    orders = orders[orders['Supplier Name'].str.lower() == supplier.lower()]
+    if orders.empty:
+        return HTMLResponse(f"<b>No orders for supplier {supplier}.</b>", status_code=404)
     output = BytesIO()
-    supplier_orders[['Order number', 'Offer SKU', 'Quantity', 'Customer Name']].to_excel(output, index=False)
+    orders[['Order number', 'Offer SKU', 'Quantity']].to_excel(output, index=False)
     output.seek(0)
-    return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
-        "Content-Disposition": f"attachment; filename={supplier}_Order_List.xlsx"
-    })
+    return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            headers={"Content-Disposition": f"attachment; filename={supplier}_Order_List.xlsx"})
 
-# ========== END SECTION 4 ==========
-# ========== SECTION 5: Upload Log Utilities, Undo, and END OF FILE ==========
+# Utility: Download DPD label file if available (optional)
+@app.get("/download_dpd_csv")
+async def download_dpd_csv(request: Request):
+    data = getattr(request.app.state, 'latest_dpd_csv', None)
+    if not data:
+        return HTMLResponse("<b>No DPD CSV generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
+    )
 
-# ---- Append an entry to upload_log.json file in OneDrive ----
-def append_upload_log(filename):
-    import pytz
-    from datetime import datetime
-    try:
-        log = download_json_file(UPLOAD_LOG_FILE_ID)
-    except Exception:
-        log = []
-    log.append({
-        "filename": filename,
-        "datetime": datetime.now(pytz.timezone("Europe/Dublin")).isoformat(timespec="seconds")
-    })
-    upload_json_file(UPLOAD_LOG_FILE_ID, log)
-
-# ---- View Upload Log for Admin ----
-@app.get("/admin/upload_log")
-def view_upload_log(request: Request):
-    if not is_admin(request):
-        return RedirectResponse(url="/admin/login", status_code=302)
-    try:
-        log = download_json_file(UPLOAD_LOG_FILE_ID)
-    except Exception:
-        log = []
-    return templates.TemplateResponse("upload_log.html", {"request": request, "log": log})
-
-# ---- Undo Last Order History Update (removes last uploaded batch) ----
-@app.post("/admin/undo_last_upload")
-def undo_last_upload(request: Request):
-    if not is_admin(request):
-        return RedirectResponse(url="/admin/login", status_code=302)
-    try:
-        hist = download_csv_file(ORDER_HISTORY_FILE_ID)
-        log = download_json_file(UPLOAD_LOG_FILE_ID)
-        if not log or hist.empty:
-            return HTMLResponse("No upload to undo.", status_code=400)
-        last_upload = log[-1]
-        last_fname = last_upload["filename"]
-        # Remove all rows with this file's orders, assuming all from last batch have same upload time/file.
-        # (Adjust logic as needed based on your data structure.)
-        # Here we just remove the last N rows as a fallback:
-        rows_to_remove = len(hist) // len(log) if len(log) else 1
-        hist = hist.iloc[:-rows_to_remove] if rows_to_remove < len(hist) else pd.DataFrame(hist.columns)
-        upload_csv_file(ORDER_HISTORY_FILE_ID, hist)
-        log = log[:-1]
-        upload_json_file(UPLOAD_LOG_FILE_ID, log)
-        return RedirectResponse(url="/admin", status_code=302)
-    except Exception as e:
-        return HTMLResponse(f"Undo failed: {e}", status_code=500)
-
-# ---- Set Max SKU Per Parcel (Update JSON in OneDrive) ----
-@app.post("/admin/set_max_per_parcel")
-async def set_max_per_parcel(request: Request, sku: str = Form(...), max_qty: int = Form(...)):
-    if not is_admin(request):
-        return RedirectResponse(url="/admin/login", status_code=302)
-    try:
-        max_settings = download_json_file(SKU_MAX_FILE_ID)
-    except Exception:
-        max_settings = {}
-    max_settings[sku] = max_qty
-    upload_json_file(SKU_MAX_FILE_ID, max_settings)
-    return RedirectResponse(url="/admin", status_code=302)
-
-# ---- Remove SKU Max Per Parcel Limit ----
-@app.post("/admin/remove_max_per_parcel")
-async def remove_max_per_parcel(request: Request, sku: str = Form(...)):
-    if not is_admin(request):
-        return RedirectResponse(url="/admin/login", status_code=302)
-    try:
-        max_settings = download_json_file(SKU_MAX_FILE_ID)
-        if sku in max_settings:
-            del max_settings[sku]
-            upload_json_file(SKU_MAX_FILE_ID, max_settings)
-    except Exception:
-        pass
-    return RedirectResponse(url="/admin", status_code=302)
+# Utility: Download Zoho file if available (optional)
+@app.get("/download_zoho_xlsx")
+async def download_zoho_xlsx(request: Request):
+    data = getattr(request.app.state, 'latest_zoho_xlsx', None)
+    if not data:
+        return HTMLResponse("<b>No Zoho XLSX generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=zoho_orders.xlsx"}
+    )
 
 # ========== END OF FILE ==========
