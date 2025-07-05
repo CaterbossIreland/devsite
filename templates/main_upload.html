@@ -6,13 +6,39 @@
         body { font-family: 'Segoe UI', Arial, sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
         .container { max-width: 720px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
         h2 { margin-bottom: 0.5em; }
+        button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
+        button:hover { background: #2563eb; }
+        .footer { margin-top: 2em; text-align: center; color: #888;}
+        .logo-wrap { text-align: center; margin-bottom: 1.6em; }
+        .logo-img { max-width: 230px; height:auto; filter: drop-shadow(0 3px 8px #0001;}
+        .admin-btn { background: #a389f4; margin-bottom: 1em;}
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>Order Upload Page</h2>
-        <p>Hello, Caterboss! The page is working. You can now add your upload forms and content here.</p>
+        <div class="logo-wrap">
+            <img src="/static/logo.png" class="logo-img" alt="Logo" />
+        </div>
+        <h2>Order Upload</h2>
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input name="file" type="file" accept=".xlsx,.csv" required>
+            <button type="submit">Upload & Show Output</button>
+        </form>
+        <div id="results"></div>
+        <hr style="margin:2em 0;">
+        <button id="adminBtn" class="admin-btn" onclick="window.location.href='/admin'">Admin Settings & Dashboard</button>
     </div>
+    <div class="footer">Caterboss Orders &copy; 2025</div>
+    <script>
+        document.getElementById('uploadForm').onsubmit = async function(e){
+            e.preventDefault();
+            let formData = new FormData(this);
+            document.getElementById('results').innerHTML = "<em>Processing...</em>";
+            let res = await fetch('/upload_orders/display', { method: 'POST', body: formData });
+            let html = await res.text();
+            document.getElementById('results').innerHTML = html;
+            window.scrollTo(0,document.body.scrollHeight);
+        };
+    </script>
 </body>
 </html>
-
