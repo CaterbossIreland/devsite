@@ -14,26 +14,10 @@ DRIVE_ID = os.getenv("DRIVE_ID", "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzW
 SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADDVCVQ")
 NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5GERF436HITURGITCR3M7XMYJHF")
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FKHUI4S6BVWJDLNWETK4TUU26D")
-SKU_MAX_FILE_ID = "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647"  # your JSON on OneDrive
-
+SKU_MAX_FILE_ID = os.getenv("SKU_MAX_FILE_ID", "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647")
 
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
 DPD_TEMPLATE_PATH = "DPD.Import(1).csv"   # Use the correct file!
-
-SKU_MAX_FILE = "sku_max_per_parcel.json"
-
-def load_max_per_parcel_map():
-    try:
-        with open(SKU_MAX_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_max_per_parcel_map(data):
-    with open(SKU_MAX_FILE, "w") as f:
-        json.dump(data, f)
-
-max_per_parcel_map = load_max_per_parcel_map()
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -91,6 +75,31 @@ def get_dpd_template_columns(template_path):
     headers = list(df.iloc[1])
     return df, headers, delimiter
 
+def download_json_file(file_id):
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    if not r.content or r.content.strip() in [b'', b'{}']:
+        return {}
+    return json.loads(r.content.decode("utf-8"))
+
+def upload_json_file(file_id, data):
+    token = get_graph_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
+    r = requests.put(url, headers=headers, data=json.dumps(data).encode("utf-8"))
+    r.raise_for_status()
+
+def load_max_per_parcel_map():
+    return download_json_file(SKU_MAX_FILE_ID)
+def save_max_per_parcel_map(data):
+    upload_json_file(SKU_MAX_FILE_ID, data)
+
 # ---------- Undo Last Stock Update (restore previous version on OneDrive) ----------
 def restore_prev_version(file_id):
     token = get_graph_access_token()
@@ -101,7 +110,7 @@ def restore_prev_version(file_id):
     versions = r.json().get('value', [])
     if len(versions) < 2:
         return False, "No previous version found."
-    prev_version_id = versions[1]['id']  # 0 is latest, 1 is previous
+    prev_version_id = versions[1]['id']
     restore_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions/{prev_version_id}/restoreVersion"
     r2 = requests.post(restore_url, headers=headers)
     if r2.status_code == 204:
@@ -120,13 +129,14 @@ async def undo_stock_update(request: Request):
 @app.post("/set_max_per_parcel")
 async def set_max_per_parcel(sku: str = Form(...), max_qty: int = Form(...)):
     sku = sku.strip()
+    max_per_parcel_map = load_max_per_parcel_map()
     max_per_parcel_map[sku] = int(max_qty)
     save_max_per_parcel_map(max_per_parcel_map)
     return HTMLResponse(f"<b>{sku}:</b> max per parcel set to <b>{max_qty}</b> (saved).")
 
 @app.get("/", response_class=HTMLResponse)
 async def main_upload_form():
-    # Display the current max per parcel rules
+    max_per_parcel_map = load_max_per_parcel_map()
     rules_html = ""
     if max_per_parcel_map:
         rules_html = "<div style='background:#eef4fc;padding:1em 1.5em;border-radius:8px;margin-bottom:1em;'><b>Current max per parcel settings:</b><ul>"
@@ -203,6 +213,7 @@ async def main_upload_form():
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
     global latest_nisbets_csv, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
+    max_per_parcel_map = load_max_per_parcel_map()
     try:
         df = pd.read_excel(file.file)
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
@@ -397,7 +408,6 @@ async def upload_orders_display(file: UploadFile = File(...)):
 
     dpd_final_df = pd.DataFrame(final_order_rows).drop_duplicates('Order number')
 
-    # -- UPDATE: Split DPD labels by max_per_parcel rules --
     dpd_field_map = {
         0:  lambda row: row.get('Order number', ''),
         1:  lambda row: row.get('Shipping address company', ''),
@@ -408,7 +418,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
         6:  lambda row: row.get('Shipping address state', ''),
         7:  lambda row: row.get('Shipping address zip', ''),
         8:  lambda row: '372',
-        9:  lambda row: '1', # We'll set this later
+        9:  lambda row: '1',  # We'll set this later
         10: lambda row: '10',
         11: lambda row: 'N',
         12: lambda row: 'O',
@@ -430,36 +440,34 @@ async def upload_orders_display(file: UploadFile = File(...)):
     export_rows = []
     errors = []
 
-for _, row in dpd_final_df.iterrows():
-    # Find SKU and quantity for this order
-    sku = row.get('Offer SKU', '') or row.get('SKU', '')
-    try:
-        qty = int(row.get('Quantity', 1))
-    except Exception:
-        qty = 1
-    # Use max_per_parcel_map if set
-    if sku in max_per_parcel_map:
-        max_per = max_per_parcel_map[sku]
-        parcel_count = (qty + max_per - 1) // max_per  # ceiling division
-    else:
-        parcel_count = row.get('dpd_parcel_count', 1)
+    for _, row in dpd_final_df.iterrows():
+        sku = row.get('Offer SKU', '') or row.get('SKU', '')
+        try:
+            qty = int(row.get('Quantity', 1))
+        except Exception:
+            qty = 1
+        # Use max_per_parcel_map if set
+        if sku in max_per_parcel_map:
+            max_per = max_per_parcel_map[sku]
+            parcel_count = (qty + max_per - 1) // max_per  # ceiling division
+        else:
+            parcel_count = row.get('dpd_parcel_count', 1)
 
-    row_data = [''] * dpd_col_count
-    missing = []
-    for idx, fname in required_fields:
-        value = dpd_field_map[idx](row)
-        if not value or pd.isnull(value) or str(value).strip() == '':
-            missing.append(fname)
-    if missing:
-        errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
-        continue
-    for i in range(dpd_col_count):
-        if i == 9: # Parcel count field
-            row_data[i] = str(parcel_count)
-        elif i in dpd_field_map:
-            row_data[i] = dpd_field_map[i](row)
-    export_rows.append(row_data)
-
+        row_data = [''] * dpd_col_count
+        missing = []
+        for idx, fname in required_fields:
+            value = dpd_field_map[idx](row)
+            if not value or pd.isnull(value) or str(value).strip() == '':
+                missing.append(fname)
+        if missing:
+            errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
+            continue
+        for i in range(dpd_col_count):
+            if i == 9:  # Parcel count field
+                row_data[i] = str(parcel_count)
+            elif i in dpd_field_map:
+                row_data[i] = dpd_field_map[i](row)
+        export_rows.append(row_data)
 
     if errors:
         dpd_error_report_html = "<div class='out-card' style='background:#ffefef;border:1px solid #e87272;'><h3>DPD Label Export: Excluded Orders</h3><table style='width:100%;border-collapse:collapse;'><tr><th>Order Number</th><th>Missing Field(s)</th></tr>"
