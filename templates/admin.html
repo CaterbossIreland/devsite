@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Caterboss Admin Dashboard</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
+        .container { max-width: 880px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+        h2 { margin-bottom: 0.5em; }
+        .admin-header { display: flex; align-items: center; gap: 1em; }
+        .logo-img { max-width: 140px; height:auto; filter: drop-shadow(0 2px 5px #0001);}
+        .section { margin-bottom: 2.6em; }
+        button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.09em; padding: 0.5em 2em; cursor: pointer;}
+        button:hover { background: #2563eb; }
+        .card { background: #f8fafc; border-radius: 10px; box-shadow: 0 1px 8px #0001; padding: 1.2em 1.7em; margin-bottom: 1.7em; }
+        .metrics-table, .upload-table, .top-table { width: 100%; border-collapse: collapse; background: #fff; }
+        .metrics-table th, .metrics-table td, .upload-table th, .upload-table td, .top-table th, .top-table td { border-bottom: 1px solid #e6e6ee; padding: 0.5em 1em; text-align: left;}
+        .metrics-table th, .upload-table th, .top-table th { background: #f3f6f9; }
+        .metrics-table tr:last-child td, .upload-table tr:last-child td, .top-table tr:last-child td { border-bottom: none;}
+        .subtitle { color: #888; font-size: 1.1em; margin-bottom: 0.5em;}
+        .footer { text-align: center; color: #aaa; margin-top: 2em;}
+        .danger { background: #ffeaea; color: #b30000; border: 1px solid #ffb3b3; padding: 0.5em 1em; border-radius: 8px;}
+        .hidden { display: none; }
+        .right { float: right; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="admin-header">
+        <img src="/static/logo.png" class="logo-img" alt="Logo" />
+        <h2>Admin Settings & Dashboard</h2>
+    </div>
+    
+    {% if not session.authenticated %}
+        <div class="section">
+            <form method="post" action="/admin">
+                <label>
+                    <b>Admin Password:</b>
+                    <input type="password" name="password" style="margin-left:1em; font-size:1.1em;" required>
+                </label>
+                <button type="submit">Login</button>
+                {% if session.auth_failed %}
+                <div class="danger" style="margin-top:1em;">Incorrect password. Please try again.</div>
+                {% endif %}
+            </form>
+        </div>
+    {% else %}
+        <div class="section card">
+            <h3>Undo Last Stock Update</h3>
+            <form method="post" action="/undo_stock_update">
+                <button type="submit" style="background:#e53935;">Undo Last Stock Update</button>
+            </form>
+        </div>
+
+        <div class="section card">
+            <h3>Set Max Per Parcel (SKU)</h3>
+            <form method="post" action="/set_max_per_parcel">
+                <label>SKU:
+                    <input name="sku" required style="margin-right:0.8em;">
+                </label>
+                <label>Max per parcel:
+                    <input name="max_qty" type="number" min="1" required style="width:65px;margin-right:0.8em;">
+                </label>
+                <button type="submit">Set</button>
+            </form>
+            {% if sku_max_map %}
+                <div style="margin-top:1em;">
+                    <b>Current max per parcel:</b>
+                    <ul>
+                        {% for sku, max_qty in sku_max_map.items() %}
+                            <li><b>{{ sku }}</b>: {{ max_qty }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="section card">
+            <h3>Upload History</h3>
+            <table class="upload-table">
+                <tr>
+                    <th>Filename</th>
+                    <th>Upload Date</th>
+                    <th>Upload Time</th>
+                </tr>
+                {% for entry in upload_history %}
+                <tr>
+                    <td>{{ entry.filename }}</td>
+                    <td>{{ entry.date }}</td>
+                    <td>{{ entry.time }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        <div class="section card">
+            <h3>Order Metrics & Dashboard</h3>
+            <div class="subtitle">Total sales, orders, SKUs, top customers, etc. since system start</div>
+            <table class="metrics-table">
+                <tr><th>Metric</th><th>Value</th></tr>
+                <tr><td>Total Orders</td><td>{{ dashboard.total_orders }}</td></tr>
+                <tr><td>Highest Weekly Order Count</td><td>{{ dashboard.highest_weekly }}</td></tr>
+                <tr><td>Highest Daily Order Count</td><td>{{ dashboard.highest_daily }}</td></tr>
+                <tr><td>Highest Monthly Order Count</td><td>{{ dashboard.highest_monthly }}</td></tr>
+                <tr><td>Total Sales (ex VAT)</td><td>€{{ dashboard.total_sales_no_vat }}</td></tr>
+                <tr><td>Total Sales (inc VAT)</td><td>€{{ dashboard.total_sales_with_vat }}</td></tr>
+                <tr><td>Total Shipping Charged</td><td>€{{ dashboard.total_shipping }}</td></tr>
+            </table>
+        </div>
+        
+        <div class="section card">
+            <h3>Top SKUs Ordered</h3>
+            <form method="get" action="/admin">
+                <label>Show:
+                    <select name="sku_limit" onchange="this.form.submit()">
+                        <option value="10" {% if sku_limit == 10 %}selected{% endif %}>Top 10</option>
+                        <option value="50" {% if sku_limit == 50 %}selected{% endif %}>Top 50</option>
+                        <option value="100" {% if sku_limit == 100 %}selected{% endif %}>Top 100</option>
+                        <option value="all" {% if sku_limit == 'all' %}selected{% endif %}>All</option>
+                    </select>
+                </label>
+            </form>
+            <table class="top-table">
+                <tr><th>SKU</th><th>Total Ordered</th></tr>
+                {% for sku, qty in dashboard.top_skus %}
+                    <tr><td>{{ sku }}</td><td>{{ qty }}</td></tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        <div class="section card">
+            <h3>Top Customers</h3>
+            <form method="get" action="/admin">
+                <label>Show:
+                    <select name="customer_limit" onchange="this.form.submit()">
+                        <option value="10" {% if customer_limit == 10 %}selected{% endif %}>Top 10</option>
+                        <option value="50" {% if customer_limit == 50 %}selected{% endif %}>Top 50</option>
+                        <option value="100" {% if customer_limit == 100 %}selected{% endif %}>Top 100</option>
+                        <option value="all" {% if customer_limit == 'all' %}selected{% endif %}>All</option>
+                    </select>
+                </label>
+            </form>
+            <table class="top-table">
+                <tr><th>Customer</th><th>Total Orders</th></tr>
+                {% for cust, cnt in dashboard.top_customers %}
+                    <tr><td>{{ cust }}</td><td>{{ cnt }}</td></tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        <form method="post" action="/admin/logout">
+            <button type="submit" style="background:#ddd;color:#333;">Logout</button>
+        </form>
+    {% endif %}
+
+    <div class="footer">Caterboss Admin &copy; 2025</div>
+</div>
+</body>
+</html>
