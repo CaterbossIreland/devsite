@@ -1,9 +1,11 @@
 import os
 import requests
 import pandas as pd
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from io import BytesIO, StringIO
+import json
 
 TENANT_ID = os.getenv("TENANT_ID", "ce280aae-ee92-41fe-ab60-66b37ebc97dd")
 CLIENT_ID = os.getenv("CLIENT_ID", "83acd574-ab02-4cfe-b28c-e38c733d9a52")
@@ -16,7 +18,23 @@ NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLR
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
 DPD_TEMPLATE_PATH = "DPD.Import(1).csv"   # Use the correct file!
 
+SKU_MAX_FILE = "sku_max_per_parcel.json"
+
+def load_max_per_parcel_map():
+    try:
+        with open(SKU_MAX_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_max_per_parcel_map(data):
+    with open(SKU_MAX_FILE, "w") as f:
+        json.dump(data, f)
+
+max_per_parcel_map = load_max_per_parcel_map()
+
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 latest_nisbets_csv = None
 latest_zoho_xlsx = None
 latest_dpd_csv = None
@@ -64,33 +82,86 @@ def upload_excel_file(file_id, df):
     r.raise_for_status()
 
 def get_dpd_template_columns(template_path):
-    # Check delimiter in file
     with open(template_path, "r", encoding="utf-8") as f:
         sample = f.read(2048)
     delimiter = "," if sample.count(",") > sample.count(";") else ";"
-    print(f"DEBUG: DPD template detected delimiter: '{delimiter}'")
     df = pd.read_csv(template_path, header=None, delimiter=delimiter)
     headers = list(df.iloc[1])
     return df, headers, delimiter
 
+# ---------- Undo Last Stock Update (restore previous version on OneDrive) ----------
+def restore_prev_version(file_id):
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    versions = r.json().get('value', [])
+    if len(versions) < 2:
+        return False, "No previous version found."
+    prev_version_id = versions[1]['id']  # 0 is latest, 1 is previous
+    restore_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions/{prev_version_id}/restoreVersion"
+    r2 = requests.post(restore_url, headers=headers)
+    if r2.status_code == 204:
+        return True, "Restored previous version."
+    else:
+        return False, f"Failed to restore: {r2.text}"
+
+@app.post("/undo_stock_update")
+async def undo_stock_update(request: Request):
+    msgs = []
+    for label, file_id in [("Nisbets", NISBETS_STOCK_FILE_ID), ("Nortons", NORTONS_STOCK_FILE_ID)]:
+        success, msg = restore_prev_version(file_id)
+        msgs.append(f"<b>{label}:</b> {msg}")
+    return HTMLResponse("<br>".join(msgs))
+
+@app.post("/set_max_per_parcel")
+async def set_max_per_parcel(sku: str = Form(...), max_qty: int = Form(...)):
+    sku = sku.strip()
+    max_per_parcel_map[sku] = int(max_qty)
+    save_max_per_parcel_map(max_per_parcel_map)
+    return HTMLResponse(f"<b>{sku}:</b> max per parcel set to <b>{max_qty}</b> (saved).")
+
 @app.get("/", response_class=HTMLResponse)
 async def main_upload_form():
-    return """
+    # Display the current max per parcel rules
+    rules_html = ""
+    if max_per_parcel_map:
+        rules_html = "<div style='background:#eef4fc;padding:1em 1.5em;border-radius:8px;margin-bottom:1em;'><b>Current max per parcel settings:</b><ul>"
+        for sku, maxqty in max_per_parcel_map.items():
+            rules_html += f"<li><b>{sku}</b>: {maxqty}</li>"
+        rules_html += "</ul></div>"
+    return f"""
     <style>
-    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
-    .container { max-width: 720px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
-    h2 { margin-bottom: 0.5em; }
-    .upload-form { display: flex; flex-direction: column; gap: 1em;}
-    button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
-    button:hover { background: #2563eb; }
-    .footer { margin-top: 2em; text-align: center; color: #888;}
-    .logo-wrap { text-align: center; margin-bottom: 1.6em; }
-    .logo-img { max-width: 230px; height:auto; filter: drop-shadow(0 3px 8px #0001);}
+    body {{ font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}}
+    .container {{ max-width: 720px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}}
+    h2 {{ margin-bottom: 0.5em; }}
+    .upload-form {{ display: flex; flex-direction: column; gap: 1em;}}
+    button {{ background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}}
+    button:hover {{ background: #2563eb; }}
+    .footer {{ margin-top: 2em; text-align: center; color: #888;}}
+    .logo-wrap {{ text-align: center; margin-bottom: 1.6em; }}
+    .logo-img {{ max-width: 230px; height:auto; filter: drop-shadow(0 3px 8px #0001;}}
     </style>
     <div class="container">
       <div class="logo-wrap">
         <img src="/static/logo.png" class="logo-img" alt="Logo" />
       </div>
+      <form id="undoForm" method="post" action="/undo_stock_update" style="margin-bottom:1em;">
+        <button type="submit" style="background:#e53935;color:#fff;border:none;border-radius:6px;padding:0.6em 1.6em;cursor:pointer;margin-bottom:1.4em;">
+          Undo Last Stock Update
+        </button>
+      </form>
+      <div id="undo_result"></div>
+      <div class="sku-max-form" style="margin-bottom:2em;">
+        <form id="skuMaxForm" style="display:flex;gap:1em;align-items:center;">
+          <label>SKU: <input name="sku" required style="margin-right:0.8em;"></label>
+          <label>Max per parcel: <input name="max_qty" type="number" min="1" required style="width:65px;margin-right:0.8em;"></label>
+          <button type="submit">Set Max Per Parcel</button>
+        </form>
+        <div id="sku_max_result"></div>
+      </div>
+      {rules_html}
       <h2>Upload Orders File</h2>
       <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
         <input name="file" type="file" accept=".xlsx" required>
@@ -100,26 +171,38 @@ async def main_upload_form():
     </div>
     <div class="footer">Caterboss Orders &copy; 2025</div>
     <script>
-    document.getElementById('uploadForm').onsubmit = async function(e){
+    document.getElementById('undoForm').onsubmit = async function(e){{
+      e.preventDefault();
+      let res = await fetch('/undo_stock_update', {{ method: 'POST' }});
+      let text = await res.text();
+      document.getElementById('undo_result').innerHTML = text;
+    }};
+    document.getElementById('skuMaxForm').onsubmit = async function(e){{
+      e.preventDefault();
+      let data = new FormData(this);
+      let res = await fetch('/set_max_per_parcel', {{method: 'POST', body: data}});
+      let text = await res.text();
+      document.getElementById('sku_max_result').innerHTML = text;
+      this.reset();
+      window.location.reload(); // to show new rule after submit
+    }};
+    document.getElementById('uploadForm').onsubmit = async function(e){{
       e.preventDefault();
       let formData = new FormData(this);
       document.getElementById('results').innerHTML = "<em>Processing...</em>";
-      let res = await fetch('/upload_orders/display', { method: 'POST', body: formData });
+      let res = await fetch('/upload_orders/display', {{ method: 'POST', body: formData }});
       let html = await res.text();
       document.getElementById('results').innerHTML = html;
       window.scrollTo(0,document.body.scrollHeight);
-    }
+    }};
     </script>
     """
-
 
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
     global latest_nisbets_csv, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
     try:
         df = pd.read_excel(file.file)
-        print(f"Total orders in upload: {len(df)}")
-        print("Order file columns:", list(df.columns))
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
     except Exception as e:
         return HTMLResponse(f"<b>Order file read failed or missing columns:</b> {e}", status_code=500)
@@ -210,7 +293,6 @@ async def upload_orders_display(file: UploadFile = File(...)):
         return HTMLResponse(f"<b>Failed to load Zoho template: {e}</b>", status_code=500)
 
     zoho_df = df.copy()
-    # Add your fields and set default values
     if 'Date created' in zoho_df.columns:
         zoho_df['Date created'] = zoho_df['Date created'].astype(str).str.split().str[0]
     zoho_df['Shipping total amount'] = 4.95
@@ -232,11 +314,9 @@ async def upload_orders_display(file: UploadFile = File(...)):
         zoho_df['Subject'] = zoho_df['Order number']
     zoho_df['Payment Terms'] = 'Musgrave'
 
-    # Ensure all template columns exist (fill missing with blank)
     for col in zoho_col_order:
         if col not in zoho_df.columns:
             zoho_df[col] = ""
-    # Now set DataFrame to exact template column order
     zoho_df = zoho_df[zoho_col_order]
     buffer = BytesIO()
     zoho_df.to_excel(buffer, index=False)
@@ -274,18 +354,12 @@ async def upload_orders_display(file: UploadFile = File(...)):
         dpd_error_report_html = f"<b>Failed to load DPD template: {e}</b>"
 
     dpd_col_count = len(dpd_col_headers)
-    print(f"DPD template columns: {dpd_col_headers}")
-    print(f"DPD col count: {dpd_col_count}")
-
     exclude_orders = set(['X001111531-A', 'X001111392-A', 'X001111558-A', 'X001111425-A'])
     exclude_orders.update([x.replace('-A', '-B') for x in exclude_orders])
 
     orders_df = df.copy()
-    print(f"Initial upload file rows: {len(orders_df)}")
     orders_df = orders_df[orders_df['Order number'].astype(str).str.endswith(('-A', '-B'))]
-    print(f"After -A/-B filter: {len(orders_df)}")
     orders_df = orders_df[~orders_df['Order number'].isin(exclude_orders)].copy()
-    print(f"After removing sample/fraud: {len(orders_df)}")
 
     orders_df['base_order'] = orders_df['Order number'].str.replace(r'(-A|-B)$', '', regex=True)
     orders_df['order_suffix'] = orders_df['Order number'].str.extract(r'-(A|B)$')
@@ -320,9 +394,8 @@ async def upload_orders_display(file: UploadFile = File(...)):
                 used_orders.add(row['Order number'])
 
     dpd_final_df = pd.DataFrame(final_order_rows).drop_duplicates('Order number')
-    print(f"Orders after dedupe: {len(dpd_final_df)}")
-    print("First 5 orders after dedupe:", dpd_final_df.head().to_dict())
 
+    # -- UPDATE: Split DPD labels by max_per_parcel rules --
     dpd_field_map = {
         0:  lambda row: row.get('Order number', ''),
         1:  lambda row: row.get('Shipping address company', ''),
@@ -332,16 +405,16 @@ async def upload_orders_display(file: UploadFile = File(...)):
         5:  lambda row: row.get('Shipping address city', ''),
         6:  lambda row: row.get('Shipping address state', ''),
         7:  lambda row: row.get('Shipping address zip', ''),
-        8:  lambda row: '372',       # Always
-        9:  lambda row: str(row.get('dpd_parcel_count', 1)),
-        10: lambda row: '10',        # Always
-        11: lambda row: 'N',         # Always
-        12: lambda row: 'O',         # Always
+        8:  lambda row: '372',
+        9:  lambda row: '1', # We'll set this later
+        10: lambda row: '10',
+        11: lambda row: 'N',
+        12: lambda row: 'O',
         23: lambda row: row.get('Shipping address first name', ''),
         24: lambda row: row.get('Shipping address phone', ''),
-        28: lambda row: '8130L3',    # Always
-        30: lambda row: 'N',         # Always
-        31: lambda row: 'N',         # Always
+        28: lambda row: '8130L3',
+        30: lambda row: 'N',
+        31: lambda row: 'N',
     }
     required_fields = [
         (0, 'Order number'),
@@ -356,6 +429,19 @@ async def upload_orders_display(file: UploadFile = File(...)):
     errors = []
 
     for _, row in dpd_final_df.iterrows():
+        # Find SKU and quantity for this order
+        sku = row.get('Offer SKU', '') or row.get('SKU', '')
+        try:
+            qty = int(row.get('Quantity', 1))
+        except Exception:
+            qty = 1
+        # Use max_per_parcel_map if set
+        if sku in max_per_parcel_map:
+            max_per = max_per_parcel_map[sku]
+            parcel_count = (qty + max_per - 1) // max_per  # ceiling division
+        else:
+            parcel_count = row.get('dpd_parcel_count', 1)
+
         row_data = [''] * dpd_col_count
         missing = []
         for idx, fname in required_fields:
@@ -366,11 +452,11 @@ async def upload_orders_display(file: UploadFile = File(...)):
             errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
             continue
         for i in range(dpd_col_count):
-            if i in dpd_field_map:
+            if i == 9: # Parcel count field
+                row_data[i] = str(parcel_count)
+            elif i in dpd_field_map:
                 row_data[i] = dpd_field_map[i](row)
         export_rows.append(row_data)
-    print(f"DPD orders to export: {len(export_rows)}")
-    print(f"DPD errors (missing fields): {len(errors)}")
 
     if errors:
         dpd_error_report_html = "<div class='out-card' style='background:#ffefef;border:1px solid #e87272;'><h3>DPD Label Export: Excluded Orders</h3><table style='width:100%;border-collapse:collapse;'><tr><th>Order Number</th><th>Missing Field(s)</th></tr>"
@@ -449,6 +535,3 @@ async def download_dpd_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
     )
-from fastapi.staticfiles import StaticFiles
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
