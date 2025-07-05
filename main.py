@@ -1,44 +1,36 @@
 import os
-import json
+import requests
 import pandas as pd
-from datetime import datetime
-from fastapi import FastAPI, File, UploadFile, Form, Request, Depends
+from fastapi import FastAPI, File, UploadFile, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from starlette.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-import requests
+from typing import Optional
+from datetime import datetime
 from io import BytesIO, StringIO
+import json
 
-# ---- CONFIG ----
-ADMIN_PASSWORD = "Orendaent101!"
-ORDER_HISTORY_FILE_ID = "01YTGSV5BZ2T4AVNGCU5F3EWLPXYMKFATG"   # <- Update if changed!
-SKU_MAX_FILE_ID = "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647"         # <- Update if changed!
-SUPPLIER_FILE_ID = "01YTGSV5DGZEMEISWEYVDJRULO4ADDVCVQ"
-NISBETS_STOCK_FILE_ID = "01YTGSV5GERF436HITURGITCR3M7XMYJHF"
-NORTONS_STOCK_FILE_ID = "01YTGSV5FKHUI4S6BVWJDLNWETK4TUU26D"
-DRIVE_ID = os.getenv("DRIVE_ID", "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP")
+# --- OneDrive/Graph Configs ---
 TENANT_ID = os.getenv("TENANT_ID", "ce280aae-ee92-41fe-ab60-66b37ebc97dd")
 CLIENT_ID = os.getenv("CLIENT_ID", "83acd574-ab02-4cfe-b28c-e38c733d9a52")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i")
+DRIVE_ID = os.getenv("DRIVE_ID", "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzWb8B-lsUaQLURaNYNJxjP")
+SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADDVCVQ")
+NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5GERF436HITURGITCR3M7XMYJHF")
+NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FKHUI4S6BVWJDLNWETK4TUU26D")
+ORDER_HISTORY_FILE_ID = os.getenv("ORDER_HISTORY_FILE_ID", "01YTGSV5BZ2T4AVNGCU5F3EWLPXYMKFATG")
+SKU_MAX_FILE_ID = os.getenv("SKU_MAX_FILE_ID", "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647")
+UPLOAD_LOG_FILE_ID=01YTGSV5GJJRXXXWMWPRHKYWSK4K4P3WLC
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# --- App & Templates ---
 app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key="ultra-secret-CHANGE-THIS")
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.add_middleware(SessionMiddleware, secret_key="REPLACE_THIS_WITH_SOMETHING_RANDOM")
-
 templates = Jinja2Templates(directory="templates")
 
-# ------------- Auth -------------
-def is_logged_in(request: Request):
-    return request.session.get("admin") == True
-
-def require_admin(request: Request):
-    if not is_logged_in(request):
-        return RedirectResponse("/admin_login", status_code=302)
-
-# ------------- MS Graph Helper -------------
+# --- Helpers ---
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
@@ -51,182 +43,206 @@ def get_graph_access_token():
     r.raise_for_status()
     return r.json()['access_token']
 
-def download_onedrive_file(file_id):
+def download_csv_file(file_id):
     token = get_graph_access_token()
     headers = {"Authorization": f"Bearer {token}"}
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
     r = requests.get(url, headers=headers)
     r.raise_for_status()
-    return r.content
+    return pd.read_csv(BytesIO(r.content))
 
-def upload_onedrive_file(file_id, bytes_data, mime):
+def upload_csv_file(file_id, df):
     token = get_graph_access_token()
     headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": mime,
+        "Content-Type": "text/csv"
     }
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_buffer.seek(0)
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
-    r = requests.put(url, headers=headers, data=bytes_data)
+    r = requests.put(url, headers=headers, data=csv_buffer.getvalue().encode('utf-8'))
     r.raise_for_status()
 
-# ------------- SKU Max Helper -------------
-def load_max_per_parcel_map():
-    try:
-        content = download_onedrive_file(SKU_MAX_FILE_ID)
-        return json.loads(content.decode())
-    except Exception:
-        return {}
-
-def save_max_per_parcel_map(data):
-    content = json.dumps(data, indent=2).encode()
-    upload_onedrive_file(SKU_MAX_FILE_ID, content, "application/json")
-
-# ------------- Order History Helper -------------
-def read_order_history():
-    try:
-        content = download_onedrive_file(ORDER_HISTORY_FILE_ID)
-        return pd.read_csv(BytesIO(content))
-    except Exception:
-        return pd.DataFrame()
-
-def append_to_order_history(new_orders_df):
-    try:
-        content = download_onedrive_file(ORDER_HISTORY_FILE_ID)
-        old_df = pd.read_csv(BytesIO(content))
-        full_df = pd.concat([old_df, new_orders_df], ignore_index=True)
-    except Exception:
-        full_df = new_orders_df
-    buffer = BytesIO()
-    full_df.to_csv(buffer, index=False)
-    buffer.seek(0)
-    upload_onedrive_file(ORDER_HISTORY_FILE_ID, buffer.read(), "text/csv")
-
-# ------------- ADMIN ROUTES -------------
-@app.get("/admin_login", response_class=HTMLResponse)
-async def admin_login_form(request: Request):
-    return templates.TemplateResponse("admin_login.html", {"request": request, "error": ""})
-
-@app.post("/admin_login", response_class=HTMLResponse)
-async def admin_login(request: Request):
-    form = await request.form()
-    if form.get("password") == ADMIN_PASSWORD:
-        request.session["admin"] = True
-        return RedirectResponse("/admin", status_code=302)
-    return templates.TemplateResponse("admin_login.html", {"request": request, "error": "Wrong password"})
-
-@app.get("/logout")
-async def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse("/", status_code=302)
-
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_home(request: Request):
-    if not is_logged_in(request): return RedirectResponse("/admin_login", status_code=302)
-    return templates.TemplateResponse("admin_home.html", {"request": request})
-
-@app.get("/upload_history", response_class=HTMLResponse)
-async def upload_history(request: Request):
-    if not is_logged_in(request): return RedirectResponse("/admin_login", status_code=302)
-    try:
-        content = download_onedrive_file(ORDER_HISTORY_FILE_ID)
-        df = pd.read_csv(BytesIO(content))
-        uploads = df[["Upload File", "Upload Time"]].drop_duplicates().tail(100).to_dict(orient="records")
-    except Exception:
-        uploads = []
-    return templates.TemplateResponse("upload_history.html", {"request": request, "uploads": uploads})
-
-@app.get("/admin_settings", response_class=HTMLResponse)
-async def admin_settings(request: Request):
-    if not is_logged_in(request): return RedirectResponse("/admin_login", status_code=302)
-    max_map = load_max_per_parcel_map()
-    return templates.TemplateResponse("admin_settings.html", {"request": request, "sku_max": max_map, "msg": ""})
-
-@app.post("/set_max_per_parcel", response_class=HTMLResponse)
-async def set_max_per_parcel(request: Request, sku: str = Form(...), max_qty: int = Form(...)):
-    if not is_logged_in(request): return RedirectResponse("/admin_login", status_code=302)
-    max_map = load_max_per_parcel_map()
-    max_map[sku.strip()] = int(max_qty)
-    save_max_per_parcel_map(max_map)
-    msg = f"<b>{sku}:</b> max per parcel set to <b>{max_qty}</b> (saved)."
-    return templates.TemplateResponse("admin_settings.html", {"request": request, "msg": msg, "sku_max": {}})  # <-- Clear display after refresh
-
-@app.post("/undo_stock_update", response_class=HTMLResponse)
-async def undo_stock_update(request: Request):
-    if not is_logged_in(request): return RedirectResponse("/admin_login", status_code=302)
+def download_excel_file(file_id):
     token = get_graph_access_token()
     headers = {"Authorization": f"Bearer {token}"}
-    msgs = []
-    for label, file_id in [("Nisbets", NISBETS_STOCK_FILE_ID), ("Nortons", NORTONS_STOCK_FILE_ID)]:
-        url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions"
-        r = requests.get(url, headers=headers)
-        r.raise_for_status()
-        versions = r.json().get('value', [])
-        if len(versions) < 2:
-            msgs.append(f"<b>{label}:</b> No previous version found.")
-            continue
-        prev_version_id = versions[1]['id']
-        restore_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions/{prev_version_id}/restoreVersion"
-        r2 = requests.post(restore_url, headers=headers)
-        if r2.status_code == 204:
-            msgs.append(f"<b>{label}:</b> Restored previous version.")
-        else:
-            msgs.append(f"<b>{label}:</b> Failed to restore: {r2.text}")
-    return templates.TemplateResponse("admin_settings.html", {"request": request, "msg": "<br>".join(msgs), "sku_max": load_max_per_parcel_map()})
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return pd.read_excel(BytesIO(r.content))
 
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    if not is_logged_in(request): return RedirectResponse("/admin_login", status_code=302)
-    df = read_order_history()
-    # SKUs
-    top_10 = df.groupby("Offer SKU").agg({"Quantity":"sum"}).sort_values("Quantity", ascending=False).head(10).reset_index()
-    top_50 = df.groupby("Offer SKU").agg({"Quantity":"sum"}).sort_values("Quantity", ascending=False).head(50).reset_index()
-    top_100 = df.groupby("Offer SKU").agg({"Quantity":"sum"}).sort_values("Quantity", ascending=False).head(100).reset_index()
-    # Customers
-    if "Customer Name" in df.columns:
-        top_10_customers = df.groupby("Customer Name").size().sort_values(ascending=False).head(10).reset_index(name='Count')
-        top_50_customers = df.groupby("Customer Name").size().sort_values(ascending=False).head(50).reset_index(name='Count')
-        top_100_customers = df.groupby("Customer Name").size().sort_values(ascending=False).head(100).reset_index(name='Count')
+def upload_excel_file(file_id, df):
+    token = get_graph_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }
+    excel_buffer = BytesIO()
+    df.to_excel(excel_buffer, index=False)
+    excel_buffer.seek(0)
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
+    r = requests.put(url, headers=headers, data=excel_buffer.read())
+    r.raise_for_status()
+
+def download_json_file(file_id):
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return json.loads(r.content.decode())
+
+def upload_json_file(file_id, data):
+    token = get_graph_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
+    r = requests.put(url, headers=headers, data=json.dumps(data))
+    r.raise_for_status()
+
+# --- Admin logic ---
+ADMIN_PASSWORD = "Orendaent101!"
+
+def is_admin(request: Request):
+    return request.session.get("admin_logged_in", False)
+
+@app.get("/admin/login")
+def admin_login_page(request: Request):
+    return templates.TemplateResponse("admin.html", {"request": request, "error": None})
+
+@app.post("/admin/login")
+def admin_login(request: Request, password: str = Form(...)):
+    if password == ADMIN_PASSWORD:
+        request.session["admin_logged_in"] = True
+        return RedirectResponse(url="/admin", status_code=302)
     else:
-        top_10_customers = top_50_customers = top_100_customers = pd.DataFrame()
-    # Metrics
-    order_count = df["Order number"].nunique() if "Order number" in df.columns else 0
-    highest_weekly = df.groupby(pd.to_datetime(df["Upload Time"]).dt.isocalendar().week).size().max() if "Upload Time" in df.columns else 0
-    highest_monthly = df.groupby(pd.to_datetime(df["Upload Time"]).dt.month).size().max() if "Upload Time" in df.columns else 0
-    highest_daily = df.groupby(pd.to_datetime(df["Upload Time"]).dt.date).size().max() if "Upload Time" in df.columns else 0
-    total_sales = df["Quantity"].sum() if "Quantity" in df.columns else 0
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "top_10": top_10.to_dict(orient="records"),
-        "top_50": top_50.to_dict(orient="records"),
-        "top_100": top_100.to_dict(orient="records"),
-        "top_10_customers": top_10_customers.to_dict(orient="records"),
-        "top_50_customers": top_50_customers.to_dict(orient="records"),
-        "top_100_customers": top_100_customers.to_dict(orient="records"),
-        "order_count": order_count,
-        "highest_weekly": highest_weekly,
-        "highest_monthly": highest_monthly,
-        "highest_daily": highest_daily,
-        "total_sales": total_sales,
-    })
+        return templates.TemplateResponse("admin.html", {"request": request, "error": "Incorrect password."})
 
-@app.get("/download_history")
-async def download_history(request: Request):
-    if not is_logged_in(request): return RedirectResponse("/admin_login", status_code=302)
-    content = download_onedrive_file(ORDER_HISTORY_FILE_ID)
-    return StreamingResponse(BytesIO(content), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=OrderHistory.csv"})
+@app.get("/admin/logout")
+def admin_logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/admin/login", status_code=302)
 
-# ------------- MAIN ROUTES -------------
+@app.get("/admin")
+def admin_dashboard(request: Request):
+    if not is_admin(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    try:
+        order_history = download_csv_file(ORDER_HISTORY_FILE_ID)
+    except Exception:
+        order_history = pd.DataFrame()
+    total_orders = len(order_history)
+    total_qty = order_history['Quantity'].sum() if not order_history.empty else 0
+    order_history['Order Date'] = pd.to_datetime(order_history['Order Date'], errors='coerce')
+    order_history['Customer Name'] = order_history.get('Customer Name', "")
+    top_skus = order_history.groupby('Offer SKU')['Quantity'].sum().reset_index().sort_values("Quantity", ascending=False).head(10)
+    top_customers = order_history.groupby('Customer Name')['Quantity'].sum().reset_index().sort_values("Quantity", ascending=False).head(10)
+    return templates.TemplateResponse(
+        "admin.html",
+        {
+            "request": request,
+            "total_orders": total_orders,
+            "total_qty": total_qty,
+            "top_skus": top_skus.values.tolist(),
+            "top_customers": top_customers.values.tolist(),
+        }
+    )
+
+# --- Main upload/order logic (single upload form) ---
 @app.get("/", response_class=HTMLResponse)
-async def main_upload_form(request: Request):
+def main_upload_form(request: Request):
     return templates.TemplateResponse("main_upload.html", {"request": request})
 
-@app.post("/upload_orders/display", response_class=HTMLResponse)
+@app.post("/upload_orders/display")
 async def upload_orders_display(request: Request, file: UploadFile = File(...)):
-    df = pd.read_excel(file.file) if file.filename.endswith("xlsx") else pd.read_csv(file.file)
-    nowstr = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    df["Upload File"] = file.filename
-    df["Upload Time"] = nowstr
-    append_to_order_history(df)
-    # Insert your existing order processing here if you wish (supplier list, stock checks, etc)
-    return templates.TemplateResponse("upload_result.html", {"request": request, "msg": f"Order file '{file.filename}' uploaded and processed."})
+    try:
+        df = pd.read_excel(file.file) if file.filename.lower().endswith("xlsx") else pd.read_csv(file.file)
+        if not set(['Order number', 'Offer SKU', 'Quantity']).issubset(df.columns):
+            raise Exception("Missing columns: must have 'Order number', 'Offer SKU', 'Quantity'")
+        orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
+    except Exception as e:
+        return HTMLResponse(f"<b>Order file read failed or missing columns:</b> {e}", status_code=500)
 
+    try:
+        supplier_df = download_csv_file(SUPPLIER_FILE_ID)
+        sku_to_supplier = dict(zip(supplier_df['Offer SKU'], supplier_df['Supplier Name']))
+        orders['Supplier Name'] = orders['Offer SKU'].map(sku_to_supplier)
+    except Exception as e:
+        return HTMLResponse(f"<b>Supplier fetch/mapping failed:</b> {e}", status_code=500)
+
+    try:
+        nisbets_stock = download_excel_file(NISBETS_STOCK_FILE_ID)
+        nortons_stock = download_excel_file(NORTONS_STOCK_FILE_ID)
+        stock_map = {
+            'Nisbets': nisbets_stock.set_index('Offer SKU')['Quantity'].to_dict(),
+            'Nortons': nortons_stock.set_index('Offer SKU')['Quantity'].to_dict(),
+        }
+    except Exception as e:
+        return HTMLResponse(f"<b>Stock file fetch failed:</b> {e}", status_code=500)
+
+    orders['Need To Order'] = orders.apply(
+        lambda x: max(0, x['Quantity'] - stock_map.get(x['Supplier Name'], {}).get(x['Offer SKU'], 0)),
+        axis=1
+    )
+    orders = orders[orders['Need To Order'] > 0]
+
+    # --- Split for each supplier and prep files ---
+    for supplier in ['Nisbets', 'Nortons']:
+        supplier_orders = orders[orders['Supplier Name'] == supplier]
+        if not supplier_orders.empty:
+            filename = f"{supplier}_Order_List.xlsx"
+            output = BytesIO()
+            supplier_orders[['Order number', 'Offer SKU', 'Quantity']].to_excel(output, index=False)
+            output.seek(0)
+            # You can add download endpoints or save for later download as needed
+
+    # --- DPD label logic: group by Order number, count parcels
+    orders['Parcel Count'] = 1  # Default to 1 unless overridden
+    dpd_labels = orders.groupby('Order number').agg({
+        'Parcel Count': 'sum',
+        'Customer Name': 'first'
+    }).reset_index()
+    # Add CSV download if needed
+
+    # --- Update OrderHistory ---
+    try:
+        old_hist = download_csv_file(ORDER_HISTORY_FILE_ID)
+        new_hist = pd.concat([old_hist, df], ignore_index=True)
+        upload_csv_file(ORDER_HISTORY_FILE_ID, new_hist)
+    except Exception:
+        upload_csv_file(ORDER_HISTORY_FILE_ID, df)
+
+    return HTMLResponse("<b>Order processed and added to OrderHistory.csv!</b>")
+
+# --- DPD Label CSV Download Endpoint ---
+@app.get("/dpd_labels.csv")
+def dpd_labels_csv():
+    orders = download_csv_file(ORDER_HISTORY_FILE_ID)
+    orders['Parcel Count'] = 1
+    dpd_labels = orders.groupby('Order number').agg({
+        'Parcel Count': 'sum',
+        'Customer Name': 'first'
+    }).reset_index()
+    csv_buffer = StringIO()
+    dpd_labels.to_csv(csv_buffer, index=False)
+    csv_buffer.seek(0)
+    return StreamingResponse(csv_buffer, media_type='text/csv', headers={"Content-Disposition": "attachment; filename=dpd_labels.csv"})
+
+# --- Supplier Order Download (on demand for latest batch) ---
+@app.get("/supplier_orders/{supplier}.xlsx")
+def supplier_order_xlsx(supplier: str):
+    orders = download_csv_file(ORDER_HISTORY_FILE_ID)
+    supplier_orders = orders[orders['Supplier Name'].str.lower() == supplier.lower()]
+    output = BytesIO()
+    supplier_orders[['Order number', 'Offer SKU', 'Quantity']].to_excel(output, index=False)
+    output.seek(0)
+    return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
+        "Content-Disposition": f"attachment; filename={supplier}_Order_List.xlsx"
+    })
+
+# --- You can add more endpoints as needed for other business logic ---
+
+# --------------- END OF FILE ---------------
