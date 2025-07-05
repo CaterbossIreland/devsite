@@ -1,3 +1,32 @@
+for _, row in dpd_final_df.iterrows():
+    # Find SKU and quantity for this order
+    sku = row.get('Offer SKU', '') or row.get('SKU', '')
+    try:
+        qty = int(row.get('Quantity', 1))
+    except Exception:
+        qty = 1
+    # Use max_per_parcel_map if set
+    if sku in max_per_parcel_map:
+        max_per = max_per_parcel_map[sku]
+        parcel_count = (qty + max_per - 1) // max_per  # ceiling division
+    else:
+        parcel_count = row.get('dpd_parcel_count', 1)
+
+    row_data = [''] * dpd_col_count
+    missing = []
+    for idx, fname in required_fields:
+        value = dpd_field_map[idx](row)
+        if not value or pd.isnull(value) or str(value).strip() == '':
+            missing.append(fname)
+    if missing:
+        errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
+        continue
+    for i in range(dpd_col_count):
+        if i == 9: # Parcel count field
+            row_data[i] = str(parcel_count)
+        elif i in dpd_field_map:
+            row_data[i] = dpd_field_map[i](row)
+    export_rows.append(row_data)
 import os
 import requests
 import pandas as pd
@@ -429,35 +458,36 @@ async def upload_orders_display(file: UploadFile = File(...)):
     export_rows = []
     errors = []
 
-    for _, row in dpd_final_df.iterrows():
-        # Find SKU and quantity for this order
-        sku = row.get('Offer SKU', '') or row.get('SKU', '')
-        try:
-            qty = int(row.get('Quantity', 1))
-        except Exception:
-            qty = 1
-        # Use max_per_parcel_map if set
-        if sku in max_per_parcel_map:
-            max_per = max_per_parcel_map[sku]
-            parcel_count = (qty + max_per - 1) // max_per  # ceiling division
-        else:
-            parcel_count = row.get('dpd_parcel_count', 1)
+for _, row in dpd_final_df.iterrows():
+    # Find SKU and quantity for this order
+    sku = row.get('Offer SKU', '') or row.get('SKU', '')
+    try:
+        qty = int(row.get('Quantity', 1))
+    except Exception:
+        qty = 1
+    # Use max_per_parcel_map if set
+    if sku in max_per_parcel_map:
+        max_per = max_per_parcel_map[sku]
+        parcel_count = (qty + max_per - 1) // max_per  # ceiling division
+    else:
+        parcel_count = row.get('dpd_parcel_count', 1)
 
-        row_data = [''] * dpd_col_count
-        missing = []
-        for idx, fname in required_fields:
-            value = dpd_field_map[idx](row)
-            if not value or pd.isnull(value) or str(value).strip() == '':
-                missing.append(fname)
-        if missing:
-            errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
-            continue
-        for i in range(dpd_col_count):
-            if i == 9: # Parcel count field
-                row_data[i] = str(parcel_count)
-            elif i in dpd_field_map:
-                row_data[i] = dpd_field_map[i](row)
-        export_rows.append(row_data)
+    row_data = [''] * dpd_col_count
+    missing = []
+    for idx, fname in required_fields:
+        value = dpd_field_map[idx](row)
+        if not value or pd.isnull(value) or str(value).strip() == '':
+            missing.append(fname)
+    if missing:
+        errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
+        continue
+    for i in range(dpd_col_count):
+        if i == 9: # Parcel count field
+            row_data[i] = str(parcel_count)
+        elif i in dpd_field_map:
+            row_data[i] = dpd_field_map[i](row)
+    export_rows.append(row_data)
+
 
     if errors:
         dpd_error_report_html = "<div class='out-card' style='background:#ffefef;border:1px solid #e87272;'><h3>DPD Label Export: Excluded Orders</h3><table style='width:100%;border-collapse:collapse;'><tr><th>Order Number</th><th>Missing Field(s)</th></tr>"
