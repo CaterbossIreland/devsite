@@ -443,3 +443,6 @@ async def download_dpd_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
     )
+from fastapi.staticfiles import StaticFiles
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
