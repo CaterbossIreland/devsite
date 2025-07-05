@@ -1,32 +1,3 @@
-for _, row in dpd_final_df.iterrows():
-    # Find SKU and quantity for this order
-    sku = row.get('Offer SKU', '') or row.get('SKU', '')
-    try:
-        qty = int(row.get('Quantity', 1))
-    except Exception:
-        qty = 1
-    # Use max_per_parcel_map if set
-    if sku in max_per_parcel_map:
-        max_per = max_per_parcel_map[sku]
-        parcel_count = (qty + max_per - 1) // max_per  # ceiling division
-    else:
-        parcel_count = row.get('dpd_parcel_count', 1)
-
-    row_data = [''] * dpd_col_count
-    missing = []
-    for idx, fname in required_fields:
-        value = dpd_field_map[idx](row)
-        if not value or pd.isnull(value) or str(value).strip() == '':
-            missing.append(fname)
-    if missing:
-        errors.append({'Order number': row.get('Order number', ''), 'Missing': ', '.join(missing)})
-        continue
-    for i in range(dpd_col_count):
-        if i == 9: # Parcel count field
-            row_data[i] = str(parcel_count)
-        elif i in dpd_field_map:
-            row_data[i] = dpd_field_map[i](row)
-    export_rows.append(row_data)
 import os
 import requests
 import pandas as pd
@@ -43,6 +14,7 @@ DRIVE_ID = os.getenv("DRIVE_ID", "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzW
 SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADDVCVQ")
 NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5GERF436HITURGITCR3M7XMYJHF")
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FKHUI4S6BVWJDLNWETK4TUU26D")
+SKU_MAX_FILE_ID = "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647"  # your JSON on OneDrive
 
 
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
