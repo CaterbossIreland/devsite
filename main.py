@@ -84,8 +84,13 @@ async def main_upload_form():
     button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
     button:hover { background: #2563eb; }
     .footer { margin-top: 2em; text-align: center; color: #888;}
+    .logo-wrap { text-align: center; margin-bottom: 1.6em; }
+    .logo-img { max-width: 230px; height:auto; filter: drop-shadow(0 3px 8px #0001);}
     </style>
     <div class="container">
+      <div class="logo-wrap">
+        <img src="/static/logo.png" class="logo-img" alt="Logo" />
+      </div>
       <h2>Upload Orders File</h2>
       <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
         <input name="file" type="file" accept=".xlsx" required>
@@ -106,6 +111,7 @@ async def main_upload_form():
     }
     </script>
     """
+
 
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
