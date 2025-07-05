@@ -7,3 +7,4 @@ python-dotenv
 httpx
 pandas
 python-docx==1.1.0
+jinja2
