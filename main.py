@@ -14,6 +14,34 @@ DRIVE_ID = os.getenv("DRIVE_ID", "b!udRZ7OsrmU61CSAYEn--q1fPtuPR3TZAsv2B9cCW-gzW
 SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADDVCVQ")
 NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5GERF436HITURGITCR3M7XMYJHF")
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FKHUI4S6BVWJDLNWETK4TUU26D")
+SKU_MAX_FILE_ID = os.getenv("SKU_MAX_FILE_ID", "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647")
+def load_sku_limits():
+    try:
+        token = get_graph_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{SKU_MAX_FILE_ID}/content"
+        resp = requests.get(url, headers=headers)
+        resp.raise_for_status()
+        return json.loads(resp.content.decode())
+    except Exception as e:
+        print(f"Error loading SKU max per parcel from OneDrive: {e}")
+        return {}
+
+def save_sku_limits(limits):
+    try:
+        token = get_graph_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        data = json.dumps(limits).encode("utf-8")
+        url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{SKU_MAX_FILE_ID}/content"
+        resp = requests.put(url, headers=headers, data=data)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"Error saving SKU max per parcel to OneDrive: {e}")
+        return False
 
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
 DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
