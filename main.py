@@ -1,8 +1,10 @@
 import os
 import requests
 import pandas as pd
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, File, UploadFile, Request, Form
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
+from fastapi.staticfiles import StaticFiles
 from io import BytesIO, StringIO
 
 TENANT_ID = os.getenv("TENANT_ID", "ce280aae-ee92-41fe-ab60-66b37ebc97dd")
@@ -14,16 +16,112 @@ NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
 
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
-DPD_TEMPLATE_PATH = "DPD.Import(1).csv"   # Use the correct file!
+DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
 
 app = FastAPI()
-from starlette.middleware.sessions import SessionMiddleware
-app.add_middleware(SessionMiddleware, secret_key="!supersecret!")  # Put any secret key here
+app.add_middleware(SessionMiddleware, secret_key="!supersecret!")  # Change for production
 
 latest_nisbets_csv = None
 latest_zoho_xlsx = None
 latest_dpd_csv = None
 dpd_error_report_html = ""
+
+@app.get("/admin-login", response_class=HTMLResponse)
+async def admin_login_form(request: Request):
+    return """
+    <style>
+    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9;}
+    .container { max-width: 420px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+    input,button {font-size:1.1em;padding:0.5em;margin:0.3em 0;width:100%;}
+    button { background: #3b82f6; color: #fff; border: none; border-radius: 6px;}
+    </style>
+    <div class="container">
+      <h2>Admin Login</h2>
+      <form action="/admin-login" method="post">
+        <input type="password" name="password" placeholder="Password" required>
+        <button type="submit">Login</button>
+      </form>
+      <div style="text-align:center;margin-top:1em;">
+        <a href="/">← Back to Orders</a>
+      </div>
+    </div>
+    """
+
+@app.post("/admin-login")
+async def admin_login(request: Request, password: str = Form(...)):
+    if password == "Admin123":
+        request.session["admin_logged_in"] = True
+        return RedirectResponse("/admin", status_code=303)
+    else:
+        return HTMLResponse(
+            "<h3>Invalid password. <a href='/admin-login'>Try again</a>.</h3>",
+            status_code=401,
+        )
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard(request: Request):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    return """
+    <style>
+    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9;}
+    .container { max-width: 540px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+    button { background: #e53e3e; color: #fff; border: none; border-radius: 6px; padding: 0.6em 1.6em;}
+    </style>
+    <div class="container">
+      <h2>Admin Dashboard</h2>
+      <form action="/logout" method="post" style="text-align:right;">
+        <button type="submit">Logout</button>
+      </form>
+      <div>
+        <h3>Welcome, Admin!</h3>
+        <p>Build your admin features here.</p>
+      </div>
+      <div style="margin-top:2em;"><a href="/">← Back to Orders</a></div>
+    </div>
+    """
+
+@app.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/", status_code=303)
+
+@app.get("/", response_class=HTMLResponse)
+async def main_upload_form(request: Request):
+    return """
+    <style>
+    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
+    .container { max-width: 720px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+    h2 { margin-bottom: 0.5em; }
+    .upload-form { display: flex; flex-direction: column; gap: 1em;}
+    button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
+    button:hover { background: #2563eb; }
+    .footer { margin-top: 2em; text-align: center; color: #888;}
+    </style>
+    <div style="text-align:right;">
+      <a href="/admin-login"><button style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:0.5em 1.3em;font-size:1em;">Admin Login</button></a>
+    </div>
+    <div class="container">
+      <h2>Upload Orders File</h2>
+      <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
+        <input name="file" type="file" accept=".xlsx" required>
+        <button type="submit">Upload & Show Output</button>
+      </form>
+      <div id="results"></div>
+    </div>
+    <div class="footer">Caterboss Orders &copy; 2025</div>
+    <script>
+    document.getElementById('uploadForm').onsubmit = async function(e){
+      e.preventDefault();
+      let formData = new FormData(this);
+      document.getElementById('results').innerHTML = "<em>Processing...</em>";
+      let res = await fetch('/upload_orders/display', { method: 'POST', body: formData });
+      let html = await res.text();
+      document.getElementById('results').innerHTML = html;
+      window.scrollTo(0,document.body.scrollHeight);
+    }
+    </script>
+    """
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -67,7 +165,6 @@ def upload_excel_file(file_id, df):
     r.raise_for_status()
 
 def get_dpd_template_columns(template_path):
-    # Check delimiter in file
     with open(template_path, "r", encoding="utf-8") as f:
         sample = f.read(2048)
     delimiter = "," if sample.count(",") > sample.count(";") else ";"
@@ -75,79 +172,6 @@ def get_dpd_template_columns(template_path):
     df = pd.read_csv(template_path, header=None, delimiter=delimiter)
     headers = list(df.iloc[1])
     return df, headers, delimiter
-
-@app.get("/", response_class=HTMLResponse)
-async def main_upload_form(request: Request):
-    if request.session.get("admin_logged_in"):
-        # --- Your existing upload form HTML goes here! ---
-        return """
-        <style>
-        body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
-        .container { max-width: 720px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
-        h2 { margin-bottom: 0.5em; }
-        .upload-form { display: flex; flex-direction: column; gap: 1em;}
-        button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
-        button:hover { background: #2563eb; }
-        .footer { margin-top: 2em; text-align: center; color: #888;}
-        </style>
-        <div class="container">
-          <form action="/logout" method="post" style="text-align:right;">
-            <button type="submit" style="background:#e53e3e;">Logout</button>
-          </form>
-          <h2>Upload Orders File</h2>
-          <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
-            <input name="file" type="file" accept=".xlsx" required>
-            <button type="submit">Upload & Show Output</button>
-          </form>
-          <div id="results"></div>
-        </div>
-        <div class="footer">Caterboss Orders &copy; 2025</div>
-        <script>
-        document.getElementById('uploadForm').onsubmit = async function(e){
-          e.preventDefault();
-          let formData = new FormData(this);
-          document.getElementById('results').innerHTML = "<em>Processing...</em>";
-          let res = await fetch('/upload_orders/display', { method: 'POST', body: formData });
-          let html = await res.text();
-          document.getElementById('results').innerHTML = html;
-          window.scrollTo(0,document.body.scrollHeight);
-        }
-        </script>
-        """
-    else:
-        # Show login form
-        return """
-        <style>
-        body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; }
-        .container { max-width: 420px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
-        input,button {font-size:1.1em;padding:0.5em;margin:0.3em 0;width:100%;}
-        button { background: #3b82f6; color: #fff; border: none; border-radius: 6px;}
-        .footer { margin-top: 2em; text-align: center; color: #888;}
-        </style>
-        <div class="container">
-          <h2>Admin Login</h2>
-          <form action="/login" method="post">
-            <input type="password" name="password" placeholder="Password" required>
-            <button type="submit">Login</button>
-          </form>
-        </div>
-        <div class="footer">Caterboss Orders &copy; 2025</div>
-        """
-@app.post("/login")
-async def login(request: Request, password: str = Form(...)):
-    if password == "Admin123":
-        request.session["admin_logged_in"] = True
-        return RedirectResponse("/", status_code=303)
-    else:
-        return HTMLResponse(
-            "<h3>Invalid password. <a href='/'>Try again</a>.</h3>",
-            status_code=401,
-        )
-@app.post("/logout")
-async def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse("/", status_code=303)
-
 
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
@@ -368,16 +392,16 @@ async def upload_orders_display(file: UploadFile = File(...)):
         5:  lambda row: row.get('Shipping address city', ''),
         6:  lambda row: row.get('Shipping address state', ''),
         7:  lambda row: row.get('Shipping address zip', ''),
-        8:  lambda row: '372',       # Always
+        8:  lambda row: '372',
         9:  lambda row: str(row.get('dpd_parcel_count', 1)),
-        10: lambda row: '10',        # Always
-        11: lambda row: 'N',         # Always
-        12: lambda row: 'O',         # Always
+        10: lambda row: '10',
+        11: lambda row: 'N',
+        12: lambda row: 'O',
         23: lambda row: row.get('Shipping address first name', ''),
         24: lambda row: row.get('Shipping address phone', ''),
-        28: lambda row: '8130L3',    # Always
-        30: lambda row: 'N',         # Always
-        31: lambda row: 'N',         # Always
+        28: lambda row: '8130L3',
+        30: lambda row: 'N',
+        31: lambda row: 'N',
     }
     required_fields = [
         (0, 'Order number'),
@@ -485,6 +509,5 @@ async def download_dpd_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
     )
-from fastapi.staticfiles import StaticFiles
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
