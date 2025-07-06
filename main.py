@@ -90,11 +90,28 @@ async def admin_login(request: Request, password: str = Form(...)):
 async def admin_dashboard(request: Request):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/admin-login", status_code=303)
-    return """
+    sku_limits = load_sku_limits()
+    sku_list_html = ""
+    if sku_limits:
+        sku_list_html = "".join([
+            f"""<li>
+                    <b>{sku}</b>: {limit} per parcel
+                    <form method="post" action="/admin/delete-max-sku" style="display:inline;">
+                        <input type="hidden" name="sku" value="{sku}">
+                        <button type="submit" style="background:#ef4444; color:white; border:none; border-radius:5px; padding:2px 10px; font-size:0.9em; margin-left:0.7em;"
+                        onclick="return confirm('Delete rule for {sku}?');">Delete</button>
+                    </form>
+                </li>""" for sku, limit in sku_limits.items()
+        ])
+    else:
+        sku_list_html = "<i>No rules set yet.</i>"
+
+    return f"""
     <style>
-    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9;}
-    .container { max-width: 540px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
-    button { background: #e53e3e; color: #fff; border: none; border-radius: 6px; padding: 0.6em 1.6em;}
+    body {{ font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; }}
+    .container {{ max-width: 540px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em; }}
+    button {{ background: #e53e3e; color: #fff; border: none; border-radius: 6px; padding: 0.6em 1.6em; }}
+    input[type="text"], input[type="number"] {{ padding: 0.45em; border-radius: 4px; border: 1px solid #aaa; }}
     </style>
     <div class="container">
       <h2>Admin Dashboard</h2>
@@ -103,16 +120,50 @@ async def admin_dashboard(request: Request):
       </form>
       <div>
         <h3>Welcome, Admin!</h3>
-        <p>Build your admin features here.</p>
       </div>
       <form action="/admin/undo-stock-update" method="post" style="margin-top:1em;">
         <button type="submit" style="background:#fbbf24; color:#222; border:none; border-radius:6px; padding:0.7em 2em; font-size:1.1em;">
             Undo Last Stock Update
         </button>
       </form>
+      <div style="margin-top:2em; background:#f8fafc; border-radius:8px; padding:1.2em;">
+        <h3>Set Max SKUs Per Parcel</h3>
+        <form action="/admin/set-max-sku" method="post" style="display:flex;gap:1em;align-items:center;flex-wrap:wrap;">
+          <input name="sku" placeholder="SKU e.g. DL921" style="padding:0.5em;" required>
+          <input name="max_per_parcel" type="number" min="1" placeholder="Max per Parcel" style="padding:0.5em;max-width:110px;" required>
+          <button type="submit" style="padding:0.5em 1em;background:#22d3ee;color:#111;border:none;border-radius:6px;">Save</button>
+        </form>
+        <div style="margin-top:1em;">
+          <b>Current Rules:</b>
+          <ul>
+            {sku_list_html}
+          </ul>
+        </div>
+      </div>
       <div style="margin-top:2em;"><a href="/">← Back to Orders</a></div>
     </div>
     """
+@app.post("/admin/set-max-sku")
+async def set_max_sku(request: Request, sku: str = Form(...), max_per_parcel: int = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    sku_limits = load_sku_limits()
+    sku = sku.strip().upper()
+    sku_limits[sku] = int(max_per_parcel)
+    save_sku_limits(sku_limits)
+    return RedirectResponse("/admin", status_code=303)
+    
+@app.post("/admin/delete-max-sku")
+async def delete_max_sku(request: Request, sku: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    sku_limits = load_sku_limits()
+    sku = sku.strip().upper()
+    if sku in sku_limits:
+        del sku_limits[sku]
+        save_sku_limits(sku_limits)
+    return RedirectResponse("/admin", status_code=303)
+
 
 @app.post("/logout")
 async def logout(request: Request):
