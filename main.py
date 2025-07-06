@@ -77,6 +77,11 @@ async def admin_dashboard(request: Request):
         <h3>Welcome, Admin!</h3>
         <p>Build your admin features here.</p>
       </div>
+      <form action="/admin/undo-stock-update" method="post" style="margin-top:1em;">
+        <button type="submit" style="background:#fbbf24; color:#222; border:none; border-radius:6px; padding:0.7em 2em; font-size:1.1em;">
+            Undo Last Stock Update
+        </button>
+      </form>
       <div style="margin-top:2em;"><a href="/">← Back to Orders</a></div>
     </div>
     """
@@ -509,5 +514,47 @@ async def download_dpd_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
     )
+def get_previous_version_id(file_id):
+    # Get file versions and return the id of the previous version (not current/latest)
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions"
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    versions = resp.json().get("value", [])
+    if len(versions) < 2:
+        return None  # No previous version
+    # versions[0] is current, versions[1] is previous
+    return versions[1]['id']
+
+def restore_file_version(file_id, version_id):
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/versions/{version_id}/restoreVersion"
+    resp = requests.post(url, headers=headers)
+    resp.raise_for_status()
+    return resp.ok
+
+@app.post("/admin/undo-stock-update")
+async def undo_stock_update(request: Request):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    results = []
+    for name, file_id in [("Nisbets", NISBETS_STOCK_FILE_ID), ("Nortons", NORTONS_STOCK_FILE_ID)]:
+        prev_version_id = get_previous_version_id(file_id)
+        if not prev_version_id:
+            results.append(f"<li>{name}: <span style='color:red'>No previous version available.</span></li>")
+            continue
+        try:
+            restore_file_version(file_id, prev_version_id)
+            results.append(f"<li>{name}: <span style='color:green'>Stock file restored to previous version.</span></li>")
+        except Exception as e:
+            results.append(f"<li>{name}: <span style='color:red'>Restore failed: {e}</span></li>")
+    html = f"""
+    <h3>Undo Stock Update Result</h3>
+    <ul>{''.join(results)}</ul>
+    <a href="/admin"><button>Back to Admin Dashboard</button></a>
+    """
+    return HTMLResponse(html)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
