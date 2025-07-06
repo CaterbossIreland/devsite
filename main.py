@@ -45,7 +45,11 @@ def save_sku_limits(limits):
         return False
 
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
-_TEMPLATE_PATH = ".Import(1).csv"
+DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
+
+def get_dpd_template_columns(template_path):
+    # (the rest as you have it)
+
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key="!supersecret!")  # Change for production
