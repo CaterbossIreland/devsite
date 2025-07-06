@@ -56,8 +56,9 @@ app.add_middleware(SessionMiddleware, secret_key="!supersecret!")  # Change for 
 
 latest_nisbets_csv = None
 latest_zoho_xlsx = None
-latest__csv = None
-_error_report_html = ""
+latest_dpd_csv = None
+dpd_error_report_html = ""
+
 
 @app.get("/admin-login", response_class=HTMLResponse)
 async def admin_login_form(request: Request):
