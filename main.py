@@ -1,14 +1,16 @@
 import os
 import requests
 import pandas as pd
+from fastapi.responses import FileResponse
+import tempfile
 from fastapi import FastAPI, File, UploadFile, Request, Form
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from io import BytesIO, StringIO
 import json
-import tempfile
 
+# ---------- CONFIGURATION ----------
 TENANT_ID = os.getenv("TENANT_ID", "ce280aae-ee92-41fe-ab60-66b37ebc97dd")
 CLIENT_ID = os.getenv("CLIENT_ID", "83acd574-ab02-4cfe-b28c-e38c733d9a52")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "FYX8Q~bZVXuKEenMTryxYw-ZuQOq2OBTNIu8Qa~i")
@@ -19,6 +21,7 @@ NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FKHUI4S6BVWJ
 SKU_MAX_FILE_ID = os.getenv("SKU_MAX_FILE_ID", "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647")
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
 DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
+
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
@@ -59,6 +62,14 @@ def upload_excel_file(file_id, df):
     url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{file_id}/content"
     r = requests.put(url, headers=headers, data=excel_buffer.read())
     r.raise_for_status()
+
+def get_dpd_template_columns(template_path):
+    with open(template_path, "r", encoding="utf-8") as f:
+        sample = f.read(2048)
+    delimiter = "," if sample.count(",") > sample.count(";") else ";"
+    df = pd.read_csv(template_path, header=None, delimiter=delimiter)
+    headers = list(df.iloc[1])
+    return df, headers, delimiter
 
 def load_sku_limits():
     try:
@@ -106,214 +117,103 @@ def restore_file_version(file_id, version_id):
     resp = requests.post(url, headers=headers)
     resp.raise_for_status()
     return resp.ok
+
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key="!supersecret!")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-latest_nisbets_csv = []
+latest_nisbets_csv_batches = {}
 latest_zoho_xlsx = None
 latest_dpd_csv = None
 dpd_error_report_html = ""
-@app.get("/admin-login", response_class=HTMLResponse)
-async def admin_login_form(request: Request):
+@app.get("/", response_class=HTMLResponse)
+async def main_upload_form(request: Request):
     return """
     <style>
-    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9;}
-    .container { max-width: 420px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
-    input,button {font-size:1.1em;padding:0.5em;margin:0.3em 0;width:100%;}
-    button { background: #3b82f6; color: #fff; border: none; border-radius: 6px;}
+    body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
+    .container { max-width: 720px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+    h2 { margin-bottom: 0.5em; }
+    .upload-form { display: flex; flex-direction: column; gap: 1em;}
+    button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
+    button:hover { background: #2563eb; }
+    .footer { margin-top: 2em; text-align: center; color: #888;}
     </style>
-    <div class="container">
-      <h2>Admin Login</h2>
-      <form action="/admin-login" method="post">
-        <input type="password" name="password" placeholder="Password" required>
-        <button type="submit">Login</button>
-      </form>
-      <div style="text-align:center;margin-top:1em;">
-        <a href="/">← Back to Orders</a>
-      </div>
+    <div style="text-align:right;">
+      <a href="/admin-login"><button style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:0.5em 1.3em;font-size:1em;">Admin Login</button></a>
     </div>
+    <div class="container">
+      <h2>Upload Orders File</h2>
+      <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
+        <input name="file" type="file" accept=".xlsx" required>
+        <button type="submit">Upload & Show Output</button>
+      </form>
+      <div id="results"></div>
+    </div>
+    <div class="footer">Caterboss Orders &copy; 2025</div>
+    <script>
+    document.getElementById('uploadForm').onsubmit = async function(e){
+      e.preventDefault();
+      let formData = new FormData(this);
+      document.getElementById('results').innerHTML = "<em>Processing...</em>";
+      let res = await fetch('/upload_orders/display', { method: 'POST', body: formData });
+      let html = await res.text();
+      document.getElementById('results').innerHTML = html;
+      window.scrollTo(0,document.body.scrollHeight);
+    }
+    </script>
     """
 
-@app.post("/admin-login")
-async def admin_login(request: Request, password: str = Form(...)):
-    if password == "Admin123":
-        request.session["admin_logged_in"] = True
-        return RedirectResponse("/admin", status_code=303)
-    else:
-        return HTMLResponse(
-            "<h3>Invalid password. <a href='/admin-login'>Try again</a>.</h3>",
-            status_code=401,
-        )
+@app.get("/download_nisbets_csv/{batch_idx}")
+async def download_nisbets_csv(batch_idx: int):
+    csv_bytes = latest_nisbets_csv_batches.get(batch_idx)
+    if not csv_bytes:
+        return HTMLResponse(f"<b>No Nisbets CSV batch {batch_idx+1} generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=Nisbets_{batch_idx+1}.csv"}
+    )
 
-@app.post("/logout")
-async def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse("/", status_code=303)
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_dashboard(request: Request):
-    if not request.session.get("admin_logged_in"):
-        return RedirectResponse("/admin-login", status_code=303)
-    sku_limits = load_sku_limits()
-    sku_list_html = ""
-    if sku_limits:
-        sku_list_html = "".join([
-            f"""<li>
-                    <b>{sku}</b>: {limit} per parcel
-                    <form method="post" action="/admin/delete-max-sku" style="display:inline;">
-                        <input type="hidden" name="sku" value="{sku}">
-                        <button type="submit" style="background:#ef4444; color:white; border:none; border-radius:5px; padding:2px 10px; font-size:0.9em; margin-left:0.7em;"
-                        onclick="return confirm('Delete rule for {sku}?');">Delete</button>
-                    </form>
-                </li>""" for sku, limit in sku_limits.items()
-        ])
-    else:
-        sku_list_html = "<i>No rules set yet.</i>"
+@app.get("/download_zoho_xlsx")
+async def download_zoho_xlsx():
+    if not latest_zoho_xlsx:
+        return HTMLResponse("<b>No Zoho XLSX generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(latest_zoho_xlsx),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=zoho_orders.xlsx"}
+    )
 
-    return f"""
-    <style>
-    body {{ font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; }}
-    .container {{ max-width: 540px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em; }}
-    button {{ background: #e53e3e; color: #fff; border: none; border-radius: 6px; padding: 0.6em 1.6em; }}
-    input[type="text"], input[type="number"] {{ padding: 0.45em; border-radius: 4px; border: 1px solid #aaa; }}
-    </style>
-    <div class="container">
-      <h2>Admin Dashboard</h2>
-      <form action="/logout" method="post" style="text-align:right;">
-        <button type="submit">Logout</button>
-      </form>
-      <div>
-        <h3>Welcome, Admin!</h3>
-      </div>
-      <form action="/admin/undo-stock-update" method="post" style="margin-top:1em;">
-        <button type="submit" style="background:#fbbf24; color:#222; border:none; border-radius:6px; padding:0.7em 2em; font-size:1.1em;">
-            Undo Last Stock Update
-        </button>
-      </form>
-      <div style="margin-top:2em; background:#f8fafc; border-radius:8px; padding:1.2em;">
-        <h3>Set Max SKUs Per Parcel</h3>
-        <form action="/admin/set-max-sku" method="post" style="display:flex;gap:1em;align-items:center;flex-wrap:wrap;">
-          <input name="sku" placeholder="SKU e.g. DL921" style="padding:0.5em;" required>
-          <input name="max_per_parcel" type="number" min="1" placeholder="Max per Parcel" style="padding:0.5em;max-width:110px;" required>
-          <button type="submit" style="padding:0.5em 1em;background:#22d3ee;color:#111;border:none;border-radius:6px;">Save</button>
-        </form>
-        <div style="margin-top:1em;">
-          <b>Current Rules:</b>
-          <ul>
-            {sku_list_html}
-          </ul>
-        </div>
-      </div>
-      <div style="margin-top:2em;"><a href="/">← Back to Orders</a></div>
-      <div style="margin-top:2em;">
-        <a href="/admin/musgraves-dpd-upload">
-          <button style="background:#10b981;color:white;font-size:1.05em;padding:0.7em 1.4em;border:none;border-radius:7px;">
-            Musgraves DPD Upload Tool
-          </button>
-        </a>
-      </div>
-    </div>
-    """
-
-@app.post("/admin/set-max-sku")
-async def set_max_sku(request: Request, sku: str = Form(...), max_per_parcel: int = Form(...)):
-    if not request.session.get("admin_logged_in"):
-        return RedirectResponse("/admin-login", status_code=303)
-    sku_limits = load_sku_limits()
-    sku = sku.strip().upper()
-    sku_limits[sku] = int(max_per_parcel)
-    save_sku_limits(sku_limits)
-    return RedirectResponse("/admin", status_code=303)
-    
-@app.post("/admin/delete-max-sku")
-async def delete_max_sku(request: Request, sku: str = Form(...)):
-    if not request.session.get("admin_logged_in"):
-        return RedirectResponse("/admin-login", status_code=303)
-    sku_limits = load_sku_limits()
-    sku = sku.strip().upper()
-    if sku in sku_limits:
-        del sku_limits[sku]
-        save_sku_limits(sku_limits)
-    return RedirectResponse("/admin", status_code=303)
-@app.post("/logout")
-async def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse("/", status_code=303)
-
-@app.get("/admin/musgraves-dpd-upload", response_class=HTMLResponse)
-async def musgraves_dpd_form(request: Request):
-    if not request.session.get("admin_logged_in"):
-        return RedirectResponse("/admin-login", status_code=303)
-    return """
-    <style>
-      body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9;}
-      .container { max-width: 480px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
-      input,button {font-size:1.1em;padding:0.5em;margin:0.3em 0;width:100%;}
-      button { background: #3b82f6; color: #fff; border: none; border-radius: 6px;}
-    </style>
-    <div class="container">
-      <h2>Upload DPD Consignment File</h2>
-      <form action="/admin/musgraves-dpd-upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".csv" required>
-        <button type="submit">Generate Musgraves Upload File</button>
-      </form>
-      <div style="margin-top:1em;">
-        <a href="/admin">← Back to Admin Dashboard</a>
-      </div>
-    </div>
-    """
-
-import tempfile
-from fastapi.responses import FileResponse
-
-@app.post("/admin/musgraves-dpd-upload")
-async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
-    if not request.session.get("admin_logged_in"):
-        return RedirectResponse("/admin-login", status_code=303)
-    try:
-        df = pd.read_csv(file.file)
-        required_cols = ['DPD Customers First Ref', 'DPD Consignment number', 'cURL']
-        missing = [col for col in required_cols if col not in df.columns]
-        if missing:
-            return HTMLResponse(f"<b>Missing required columns: {', '.join(missing)}</b>", status_code=400)
-        export = pd.DataFrame({
-            'order-id': df['DPD Customers First Ref'],
-            'carrier-code': 'DPD',
-            'carrier-standard-code': '',
-            'carrier-name': 'DPD',
-            'carrier-url': df['cURL'],
-            'tracking-number': df['DPD Consignment number'],
-        })
-        # Save to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', newline='', encoding='utf-8') as tmpf:
-            export.to_csv(tmpf, index=False)
-            tmpf_path = tmpf.name
-        # Offer download
-        return FileResponse(
-            tmpf_path,
-            filename="Mapped_DPD_Data_File.csv",
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=Mapped_DPD_Data_File.csv"}
-        )
-    except Exception as e:
-        return HTMLResponse(f"<b>Failed: {e}</b>", status_code=500)
+@app.get("/download_dpd_csv")
+async def download_dpd_csv():
+    if not latest_dpd_csv:
+        return HTMLResponse("<b>No DPD CSV generated in this session yet.</b>", status_code=404)
+    return StreamingResponse(
+        BytesIO(latest_dpd_csv),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
+    )
 @app.post("/upload_orders/display")
 async def upload_orders_display(file: UploadFile = File(...)):
-    global latest_nisbets_csv, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
-    # 1. Read Orders File
+    global latest_nisbets_csv_batches, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
+    latest_nisbets_csv_batches = {}  # Reset batches
+
+    # --- 1. Read Orders File
     try:
         df = pd.read_excel(file.file)
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
     except Exception as e:
         return HTMLResponse(f"<b>Order file read failed or missing columns:</b> {e}", status_code=500)
-    # 2. Supplier Map
+
+    # --- 2. Supplier Map
     try:
         supplier_df = download_supplier_csv()
         sku_to_supplier = dict(zip(supplier_df['Offer SKU'], supplier_df['Supplier Name']))
         orders['Supplier Name'] = orders['Offer SKU'].map(sku_to_supplier)
     except Exception as e:
         return HTMLResponse(f"<b>Supplier fetch/mapping failed:</b> {e}", status_code=500)
-    # 3. Stock
+
+    # --- 3. Stock
     try:
         nisbets_stock = download_excel_file(NISBETS_STOCK_FILE_ID)
         nortons_stock = download_excel_file(NORTONS_STOCK_FILE_ID)
@@ -335,7 +235,6 @@ async def upload_orders_display(file: UploadFile = File(...)):
         sku = row['Offer SKU']
         qty = int(row['Quantity'])
         supplier = row['Supplier Name']
-
         if supplier not in ['Nortons', 'Nisbets']:
             continue
         in_stock = stock_left[supplier].get(sku, 0)
@@ -356,15 +255,9 @@ async def upload_orders_display(file: UploadFile = File(...)):
                 supplier_orders[supplier][order_no] = []
             supplier_orders[supplier][order_no].append((sku, to_supplier))
 
-    # ---- Nisbets splitting logic here
-    nisbets_csv_rows = []
-    for order, lines in supplier_orders['Nisbets'].items():
-        for sku, qty in lines:
-            nisbets_csv_rows.append({'Order Number': order, 'Offer SKU': sku, 'Quantity': qty})
-
-    # Split nisbets orders if more than 25 unique Order Numbers
-    max_orders_per_file = 25
+    # --- 4. Nisbets: Split into batches of max 25 unique Order Numbers per file
     nisbets_orders = list(supplier_orders['Nisbets'].keys())
+    max_orders_per_file = 25
     nisbets_batches = [
         nisbets_orders[i:i+max_orders_per_file]
         for i in range(0, len(nisbets_orders), max_orders_per_file)
@@ -380,25 +273,91 @@ async def upload_orders_display(file: UploadFile = File(...)):
             csv_buffer = StringIO()
             df_batch.to_csv(csv_buffer, index=False)
             csv_bytes = csv_buffer.getvalue().encode('utf-8')
-            # Save in memory with unique name for download
-            setattr(app.state, f'nisbets_csv_{idx}', csv_bytes)
+            latest_nisbets_csv_batches[idx] = csv_bytes
             link = f"<a href='/download_nisbets_csv/{idx}' download='Nisbets_{idx+1}.csv'><button class='copy-btn' style='right:auto;top:auto;position:relative;margin-bottom:1em;'>Download Nisbets CSV Batch {idx+1}</button></a>"
             nisbets_csv_links.append(link)
     download_link = "<br>".join(nisbets_csv_links) if nisbets_csv_links else ""
 
-    # ...Rest of code for display/export (to be continued in next block)
+    # --- 5. Format Output
+    def format_order_block(order_dict, title):
+        out = []
+        for order, lines in order_dict.items():
+            out.append(f"Order Number: {order}\n")
+            for sku, qty in lines:
+                out.append(f"·        {qty}x {sku}\n")
+            out.append("\n------------------------------\n\n")
+        return "".join(out) if out else f"No {title.lower()}."
 
-    # ------------------- DPD LABEL CSV GENERATION -------------------
+    nortons_out = format_order_block(supplier_orders['Nortons'], "Nortons orders")
+    nisbets_out = format_order_block(supplier_orders['Nisbets'], "Nisbets orders")
+    stock_out = format_order_block(stock_ship_orders, "stock shipments")
+
+    # --- 6. Zoho XLSX Generation (as before, not split)
+    try:
+        template_df = pd.read_excel(ZOHO_TEMPLATE_PATH)
+        zoho_col_order = list(template_df.columns)
+    except Exception as e:
+        return HTMLResponse(f"<b>Failed to load Zoho template: {e}</b>", status_code=500)
+
+    zoho_df = df.copy()
+    if 'Date created' in zoho_df.columns:
+        zoho_df['Date created'] = zoho_df['Date created'].astype(str).str.split().str[0]
+    zoho_df['Shipping total amount'] = 4.95
+    zoho_df['Currency Code'] = 'EUR'
+    zoho_df['Account'] = 'Caterboss Sales'
+    zoho_df['item Tax'] = 'VAT'
+    zoho_df['IteM Tax %'] = 23
+    zoho_df['Trade'] = 'No'
+    zoho_df['Channel'] = 'Caterboss'
+    zoho_df['Branch'] = 'Head Office'
+    zoho_df['Shipping Tax Name'] = 'VAT'
+    zoho_df['Shipping Tax percentage'] = 23
+    zoho_df['LCS'] = 'false'
+    zoho_df['Sales Person'] = 'Musgraves Tonka'
+    zoho_df['Terms'] = '60'
+    zoho_df['Sales Order Number'] = 'MUSGRAVE'
+    if 'Order number' in zoho_df.columns:
+        zoho_df['Invoice Number'] = zoho_df['Order number']
+        zoho_df['Subject'] = zoho_df['Order number']
+    zoho_df['Payment Terms'] = 'Musgrave'
+    for col in zoho_col_order:
+        if col not in zoho_df.columns:
+            zoho_df[col] = ""
+    zoho_df = zoho_df[zoho_col_order]
+    buffer = BytesIO()
+    zoho_df.to_excel(buffer, index=False)
+    buffer.seek(0)
+    latest_zoho_xlsx = buffer.getvalue()
+    zoho_download_link = "<a href='/download_zoho_xlsx' download='zoho_orders.xlsx'><button class='copy-btn' style='background:#0f9d58;right:auto;top:auto;position:relative;margin-bottom:1em;margin-left:1em;'>Download Zoho XLSX</button></a>"
+
+    # --- 7. Stock file updates (unchanged)
+    for sku in nisbets_shipped:
+        if sku in nisbets_stock['Offer SKU'].values:
+            idx = nisbets_stock[nisbets_stock['Offer SKU'] == sku].index[0]
+            nisbets_stock.at[idx, 'Quantity'] = max(stock_left['Nisbets'].get(sku, 0), 0)
+    for sku in nortons_shipped:
+        if sku in nortons_stock['Offer SKU'].values:
+            idx = nortons_stock[nortons_stock['Offer SKU'] == sku].index[0]
+            nortons_stock.at[idx, 'Quantity'] = max(stock_left['Nortons'].get(sku, 0), 0)
+    try:
+        if nisbets_shipped:
+            upload_excel_file(NISBETS_STOCK_FILE_ID, nisbets_stock)
+        if nortons_shipped:
+            upload_excel_file(NORTONS_STOCK_FILE_ID, nortons_stock)
+    except Exception as e:
+        if "423" in str(e):
+            return HTMLResponse("<b>Stock file update failed: File is open or locked in Excel.<br>Please close the file everywhere and try again in a minute.</b>", status_code=423)
+        return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
+
+    # --- 8. DPD CSV Generation (unchanged, same as before)
     try:
         dpd_template_df, dpd_col_headers, dpd_delim = get_dpd_template_columns(DPD_TEMPLATE_PATH)
         dpd_col_count = len(dpd_col_headers)
     except Exception as e:
-        dpd_col_headers, dpd_mandatory_row, latest_dpd_csv = [], [], None
+        dpd_col_headers, latest_dpd_csv = [], None
         dpd_error_report_html = f"<b>Failed to load DPD template: {e}</b>"
         dpd_download_link = "<span style='color:#e87272;'>DPD template not loaded.</span>"
-        html = f"""
-        <div style='color:red;padding:1em'>{dpd_error_report_html}</div>
-        """
+        html = f"""<div style='color:red;padding:1em'>{dpd_error_report_html}</div>"""
         return HTMLResponse(html)
 
     sku_limits = load_sku_limits()
@@ -515,6 +474,7 @@ async def upload_orders_display(file: UploadFile = File(...)):
     else:
         latest_dpd_csv = None
         dpd_download_link = "<span style='color:#e87272;'>No valid DPD export labels generated for this file.</span>"
+
     html = f"""
     <style>
     .out-card {{ background:#f7fafc; border-radius:10px; margin:1.5em 0; padding:1.3em 1.5em; box-shadow:0 2px 8px #0001; position:relative;}}
@@ -545,10 +505,16 @@ async def upload_orders_display(file: UploadFile = File(...)):
     {dpd_error_report_html}
     """
     return HTMLResponse(html)
+# ===============================
+#  Nisbets CSV Batch Download
+# ===============================
+from fastapi.responses import StreamingResponse
+
+latest_nisbets_csv_batches = {}
 
 @app.get("/download_nisbets_csv/{batch_idx}")
 async def download_nisbets_csv(batch_idx: int):
-    csv_bytes = getattr(app.state, f'nisbets_csv_{batch_idx}', None)
+    csv_bytes = latest_nisbets_csv_batches.get(batch_idx)
     if not csv_bytes:
         return HTMLResponse(f"<b>No Nisbets CSV batch {batch_idx+1} generated in this session yet.</b>", status_code=404)
     return StreamingResponse(
@@ -557,7 +523,9 @@ async def download_nisbets_csv(batch_idx: int):
         headers={"Content-Disposition": f"attachment; filename=Nisbets_{batch_idx+1}.csv"}
     )
 
-
+# ===============================
+#  Zoho and DPD Downloads
+# ===============================
 @app.get("/download_zoho_xlsx")
 async def download_zoho_xlsx():
     if not latest_zoho_xlsx:
@@ -577,6 +545,36 @@ async def download_dpd_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
     )
+
+# ===============================
+#  Admin routes
+# ===============================
+@app.post("/admin/set-max-sku")
+async def set_max_sku(request: Request, sku: str = Form(...), max_per_parcel: int = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    sku_limits = load_sku_limits()
+    sku = sku.strip().upper()
+    sku_limits[sku] = int(max_per_parcel)
+    save_sku_limits(sku_limits)
+    return RedirectResponse("/admin", status_code=303)
+    
+@app.post("/admin/delete-max-sku")
+async def delete_max_sku(request: Request, sku: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    sku_limits = load_sku_limits()
+    sku = sku.strip().upper()
+    if sku in sku_limits:
+        del sku_limits[sku]
+        save_sku_limits(sku_limits)
+    return RedirectResponse("/admin", status_code=303)
+
+@app.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/", status_code=303)
+
 @app.post("/admin/undo-stock-update")
 async def undo_stock_update(request: Request):
     if not request.session.get("admin_logged_in"):
@@ -599,6 +597,9 @@ async def undo_stock_update(request: Request):
     """
     return HTMLResponse(html)
 
+# ===============================
+#  Musgraves DPD Upload Tool
+# ===============================
 @app.get("/admin/musgraves-dpd-upload", response_class=HTMLResponse)
 async def musgraves_dpd_form(request: Request):
     if not request.session.get("admin_logged_in"):
@@ -622,9 +623,6 @@ async def musgraves_dpd_form(request: Request):
     </div>
     """
 
-import tempfile
-from fastapi.responses import FileResponse
-
 @app.post("/admin/musgraves-dpd-upload")
 async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
     if not request.session.get("admin_logged_in"):
@@ -643,11 +641,9 @@ async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
             'carrier-url': df['cURL'],
             'tracking-number': df['DPD Consignment number'],
         })
-        # Save to temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', newline='', encoding='utf-8') as tmpf:
             export.to_csv(tmpf, index=False)
             tmpf_path = tmpf.name
-        # Offer download
         return FileResponse(
             tmpf_path,
             filename="Mapped_DPD_Data_File.csv",
@@ -656,13 +652,3 @@ async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
         )
     except Exception as e:
         return HTMLResponse(f"<b>Failed: {e}</b>", status_code=500)
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <h2>Welcome to the Order Processing Tool</h2>
-    <ul>
-      <li><a href='/admin-login'>Login as Admin</a></li>
-      <li><a href='/admin'>Admin Dashboard (after login)</a></li>
-      <li><a href='/admin/musgraves-dpd-upload'>Musgraves DPD Upload Tool</a></li>
-    </ul>
-    """
