@@ -130,19 +130,23 @@ from fastapi import Request
 
 @app.get("/", response_class=HTMLResponse)
 async def main_upload_form(request: Request):
-    # --- ADMIN LOGIN REQUIRED ---
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/admin-login", status_code=303)
     return """
     <style>
     body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
     .container { max-width: 720px; margin: 3em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+    .logo-wrap {text-align: center; margin-top: 1em; margin-bottom: 2em;}
+    .logo-img {max-width: 250px; height: auto;}
     h2 { margin-bottom: 0.5em; }
     .upload-form { display: flex; flex-direction: column; gap: 1em;}
     button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
     button:hover { background: #2563eb; }
     .footer { margin-top: 2em; text-align: center; color: #888;}
     </style>
+    <div class="logo-wrap">
+      <img src="/static/logo.png" alt="Logo" class="logo-img" />
+    </div>
     <div style="text-align:right;">
       <a href="/admin-login"><button style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:0.5em 1.3em;font-size:1em;">Admin Login</button></a>
     </div>
@@ -167,6 +171,7 @@ async def main_upload_form(request: Request):
     }
     </script>
     """
+
 
 
 @app.get("/download_nisbets_csv/{batch_idx}")
