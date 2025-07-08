@@ -310,7 +310,6 @@ for idx, batch in enumerate(nisbets_batches):
         template_df    = pd.read_excel(ZOHO_TEMPLATE_PATH)
         zoho_col_order = list(template_df.columns)
     except Exception as e:
-        # ← this return is indented 8 spaces: 
         return HTMLResponse(
             f"<b>Failed to load Zoho template: {e}</b>",
             status_code=500
