@@ -1,4 +1,4 @@
-import os
+nisbets_outimport os
 import requests
 import pandas as pd
 from fastapi.responses import FileResponse
@@ -289,7 +289,21 @@ async def upload_orders_display(file: UploadFile = File(...)):
         return "".join(out) if out else f"No {title.lower()}."
 
     nortons_out = format_order_block(supplier_orders['Nortons'], "Nortons orders")
-    nisbets_out = format_order_block(supplier_orders['Nisbets'], "Nisbets orders")
+    nisbets_batch_blocks = []
+for idx, batch in enumerate(nisbets_batches):
+    batch_orders = {order: supplier_orders['Nisbets'][order] for order in batch}
+    orders_text = format_order_block(batch_orders, f"Nisbets orders (Batch {idx+1})")
+    download_btn = nisbets_csv_links[idx]
+    nisbets_batch_blocks.append(f"""
+    <div class="out-card">
+      <h3>Nisbets Orders – Batch {idx+1}</h3>
+      {download_btn}
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nisbetsout_{idx}').innerText)">Copy</button>
+      <pre id="nisbetsout_{idx}">{orders_text}</pre>
+    </div>
+    """)
+nisbets_out = "\n".join(nisbets_batch_blocks)
+
     stock_out = format_order_block(stock_ship_orders, "stock shipments")
 
     # --- 6. Zoho XLSX Generation (as before, not split)
@@ -488,12 +502,9 @@ async def upload_orders_display(file: UploadFile = File(...)):
       <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nortonsout').innerText)">Copy</button>
       <pre id="nortonsout">{nortons_out}</pre>
     </div>
-    <div class="out-card">
-      <h3>Nisbets (Order from Supplier)</h3>
-      {download_link}
-      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nisbetsout').innerText)">Copy</button>
-      <pre id="nisbetsout">{nisbets_out}</pre>
-    </div>
+    
+{nisbets_out}
+
     <div class="out-card">
       <h3>Ship from Stock</h3>
       <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('stockout').innerText)">Copy</button>
