@@ -557,6 +557,7 @@ async def download_nisbets_csv(batch_idx: int):
         headers={"Content-Disposition": f"attachment; filename=Nisbets_{batch_idx+1}.csv"}
     )
 
+
 @app.get("/download_zoho_xlsx")
 async def download_zoho_xlsx():
     if not latest_zoho_xlsx:
