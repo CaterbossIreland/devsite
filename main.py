@@ -308,6 +308,36 @@ async def upload_orders_display(file: UploadFile = File(...)):
     stock_out = format_order_block(stock_ship_orders, "stock shipments")
 
 
+    # --- 5. Format Output
+    def format_order_block(order_dict, title):
+        out = []
+        for order, lines in order_dict.items():
+            out.append(f"Order Number: {order}\n")
+            for sku, qty in lines:
+                out.append(f"·        {qty}x {sku}\n")
+            out.append("\n------------------------------\n\n")
+        return "".join(out) if out else f"No {title.lower()}."
+
+    nortons_out = format_order_block(supplier_orders['Nortons'], "Nortons orders")
+
+    nisbets_batch_blocks = []
+    for idx, batch in enumerate(nisbets_batches):
+        batch_orders = {order: supplier_orders['Nisbets'][order] for order in batch}
+        orders_text = format_order_block(batch_orders, f"Nisbets orders (Batch {idx+1})")
+        download_btn = nisbets_csv_links[idx]
+        nisbets_batch_blocks.append(f"""
+        <div class="out-card">
+          <h3>Nisbets Orders – Batch {idx+1}</h3>
+          {download_btn}
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('nisbetsout_{idx}').innerText)">Copy</button>
+          <pre id="nisbetsout_{idx}">{orders_text}</pre>
+        </div>
+        """)
+    nisbets_out = "\n".join(nisbets_batch_blocks)
+
+    stock_out = format_order_block(stock_ship_orders, "stock shipments")
+
+
     # --- 6. Zoho XLSX Generation (as before, not split)
     try:
         template_df = pd.read_excel(ZOHO_TEMPLATE_PATH)
