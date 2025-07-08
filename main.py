@@ -302,15 +302,19 @@ for idx, batch in enumerate(nisbets_batches):
       <pre id="nisbetsout_{idx}">{orders_text}</pre>
     </div>
     """)
-nisbets_out = "\n".join(nisbets_batch_blocks)
-stock_out = format_order_block(stock_ship_orders, "stock shipments")
+    nisbets_out = "\n".join(nisbets_batch_blocks)
+    stock_out   = format_order_block(stock_ship_orders, "stock shipments")
 
-# --- 6. Zoho XLSX Generation (as before, not split)
-try:
-    template_df = pd.read_excel(ZOHO_TEMPLATE_PATH)
-    zoho_col_order = list(template_df.columns)
-except Exception as e:
-    return HTMLResponse(f"<b>Failed to load Zoho template: {e}</b>", status_code=500)
+    # --- 6. Zoho XLSX Generation (as before, not split)
+    try:
+        template_df    = pd.read_excel(ZOHO_TEMPLATE_PATH)
+        zoho_col_order = list(template_df.columns)
+    except Exception as e:
+        # ← this return is indented 8 spaces: 
+        return HTMLResponse(
+            f"<b>Failed to load Zoho template: {e}</b>",
+            status_code=500
+        )
 
     zoho_df = df.copy()
     if 'Date created' in zoho_df.columns:
