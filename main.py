@@ -193,8 +193,14 @@ async def download_dpd_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=DPD_Export.csv"}
     )
+from fastapi import Request
+
 @app.post("/upload_orders/display")
-async def upload_orders_display(file: UploadFile = File(...)):
+async def upload_orders_display(request: Request, file: UploadFile = File(...)):
+    # Require admin login!
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+
     global latest_nisbets_csv_batches, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
     latest_nisbets_csv_batches = {}  # Reset batches
 
