@@ -688,17 +688,19 @@ async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
             'carrier-url': df['cURL'],
             'tracking-number': df['DPD Consignment number'],
         })
-        # Save to temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', newline='', encoding='utf-8') as tmpf:
             export.to_csv(tmpf, index=False)
             tmpf_path = tmpf.name
-        # Offer download
-        return FileResponse(
+        # FileResponse with cleanup
+        response = FileResponse(
             tmpf_path,
             filename="Mapped_DPD_Data_File.csv",
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=Mapped_DPD_Data_File.csv"}
         )
+        response.call_on_close(lambda: os.remove(tmpf_path))
+        return response
     except Exception as e:
         return HTMLResponse(f"<b>Failed: {e}</b>", status_code=500)
+
 
