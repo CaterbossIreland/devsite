@@ -667,6 +667,9 @@ async def musgraves_dpd_form(request: Request):
     </div>
     """
 
+import tempfile
+from fastapi.responses import FileResponse
+
 @app.post("/admin/musgraves-dpd-upload")
 async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
     if not request.session.get("admin_logged_in"):
@@ -694,4 +697,8 @@ async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
             tmpf_path,
             filename="Mapped_DPD_Data_File.csv",
             media_type="text/csv",
-headers={"Content-Disposition": "attachment; filename=Nisbets.csv"}
+            headers={"Content-Disposition": "attachment; filename=Mapped_DPD_Data_File.csv"}
+        )
+    except Exception as e:
+        return HTMLResponse(f"<b>Failed: {e}</b>", status_code=500)
+
