@@ -126,8 +126,13 @@ latest_nisbets_csv_batches = {}
 latest_zoho_xlsx = None
 latest_dpd_csv = None
 dpd_error_report_html = ""
+from fastapi import Request
+
 @app.get("/", response_class=HTMLResponse)
 async def main_upload_form(request: Request):
+    # --- ADMIN LOGIN REQUIRED ---
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
     return """
     <style>
     body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9; margin: 0; padding: 0;}
@@ -162,6 +167,7 @@ async def main_upload_form(request: Request):
     }
     </script>
     """
+
 
 @app.get("/download_nisbets_csv/{batch_idx}")
 async def download_nisbets_csv(batch_idx: int):
