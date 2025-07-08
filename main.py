@@ -128,8 +128,8 @@ latest_dpd_csv = None
 dpd_error_report_html = ""
 from fastapi import Request
 
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_dashboard(request: Request):
+@app.get("/", response_class=HTMLResponse)
+async def main_upload_form(request: Request):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/admin-login", status_code=303)
     return """
@@ -143,15 +143,14 @@ async def admin_dashboard(request: Request):
     button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-size: 1.1em; padding: 0.7em 2em; cursor: pointer;}
     button:hover { background: #2563eb; }
     .footer { margin-top: 2em; text-align: center; color: #888;}
-    .logout-btn { position: absolute; right: 40px; top: 32px;}
     </style>
+    <div style="text-align:right;">
+      <a href="/admin-login"><button style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:0.5em 1.3em;font-size:1em;">Admin Login</button></a>
+    </div>
     <div class="container">
       <div class="logo-wrap">
         <img src="/static/logo.png" alt="Logo" class="logo-img" />
       </div>
-      <form action="/logout" method="post" style="text-align:right;">
-        <button type="submit" class="logout-btn">Logout</button>
-      </form>
       <h2>Upload Orders File</h2>
       <form class="upload-form" id="uploadForm" enctype="multipart/form-data">
         <input name="file" type="file" accept=".xlsx" required>
@@ -172,6 +171,7 @@ async def admin_dashboard(request: Request):
     }
     </script>
     """
+
 
 
 
