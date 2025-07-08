@@ -656,3 +656,13 @@ async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
         )
     except Exception as e:
         return HTMLResponse(f"<b>Failed: {e}</b>", status_code=500)
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return """
+    <h2>Welcome to the Order Processing Tool</h2>
+    <ul>
+      <li><a href='/admin-login'>Login as Admin</a></li>
+      <li><a href='/admin'>Admin Dashboard (after login)</a></li>
+      <li><a href='/admin/musgraves-dpd-upload'>Musgraves DPD Upload Tool</a></li>
+    </ul>
+    """
