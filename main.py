@@ -1,6 +1,8 @@
 import os
 import requests
 import pandas as pd
+from fastapi.responses import FileResponse
+import tempfile
 from fastapi import FastAPI, File, UploadFile, Request, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
@@ -252,6 +254,14 @@ async def admin_dashboard(request: Request):
         </div>
       </div>
       <div style="margin-top:2em;"><a href="/">← Back to Orders</a></div>
+      <div style="margin-top:2em;">
+  <a href="/admin/musgraves-dpd-upload">
+    <button style="background:#10b981;color:white;font-size:1.05em;padding:0.7em 1.4em;border:none;border-radius:7px;">
+      Musgraves DPD Upload Tool
+    </button>
+  </a>
+</div>
+
     </div>
     """
 
@@ -634,3 +644,54 @@ async def undo_stock_update(request: Request):
     <a href="/admin"><button>Back to Admin Dashboard</button></a>
     """
     return HTMLResponse(html)
+@app.get("/admin/musgraves-dpd-upload", response_class=HTMLResponse)
+async def musgraves_dpd_form(request: Request):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    return """
+    <style>
+      body { font-family: 'Segoe UI',Arial,sans-serif; background: #f3f6f9;}
+      .container { max-width: 480px; margin: 5em auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 2.5em;}
+      input,button {font-size:1.1em;padding:0.5em;margin:0.3em 0;width:100%;}
+      button { background: #3b82f6; color: #fff; border: none; border-radius: 6px;}
+    </style>
+    <div class="container">
+      <h2>Upload DPD Consignment File</h2>
+      <form action="/admin/musgraves-dpd-upload" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".csv" required>
+        <button type="submit">Generate Musgraves Upload File</button>
+      </form>
+      <div style="margin-top:1em;">
+        <a href="/admin">← Back to Admin Dashboard</a>
+      </div>
+    </div>
+    """
+
+@app.post("/admin/musgraves-dpd-upload")
+async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    try:
+        df = pd.read_csv(file.file)
+        required_cols = ['DPD Customers First Ref', 'DPD Consignment number', 'cURL']
+        missing = [col for col in required_cols if col not in df.columns]
+        if missing:
+            return HTMLResponse(f"<b>Missing required columns: {', '.join(missing)}</b>", status_code=400)
+        export = pd.DataFrame({
+            'order-id': df['DPD Customers First Ref'],
+            'carrier-code': 'DPD',
+            'carrier-standard-code': '',
+            'carrier-name': 'DPD',
+            'carrier-url': df['cURL'],
+            'tracking-number': df['DPD Consignment number'],
+        })
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', newline='', encoding='utf-8') as tmpf:
+            export.to_csv(tmpf, index=False)
+            tmpf_path = tmpf.name
+        # Offer download
+        return FileResponse(
+            tmpf_path,
+            filename="Mapped_DPD_Data_File.csv",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filenam
