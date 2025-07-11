@@ -217,22 +217,31 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     global latest_nisbets_csv_batches, latest_zoho_xlsx, latest_dpd_csv, dpd_error_report_html
     latest_nisbets_csv_batches = {}  # Reset batches
 
-    # --- 1. Read Orders File
+    # --- 1. Read Orders File ---
     try:
         df = pd.read_excel(file.file)
         orders = df[['Order number', 'Offer SKU', 'Quantity']].dropna()
     except Exception as e:
         return HTMLResponse(f"<b>Order file read failed or missing columns:</b> {e}", status_code=500)
 
-    # --- 2. Supplier Map
+    # --- 2. Supplier Map & unmatched detection ---
     try:
         supplier_df = download_supplier_csv()
         sku_to_supplier = dict(zip(supplier_df['Offer SKU'], supplier_df['Supplier Name']))
         orders['Supplier Name'] = orders['Offer SKU'].map(sku_to_supplier)
+        # Find unmatched SKUs
+        unmatched = orders[orders['Supplier Name'].isna()][['Order number', 'Offer SKU', 'Quantity']]
+        unmatched_report = []
+        for _, row in unmatched.iterrows():
+            unmatched_report.append({
+                'order_no': row['Order number'],
+                'sku': row['Offer SKU'],
+                'qty': int(row['Quantity'])
+            })
     except Exception as e:
         return HTMLResponse(f"<b>Supplier fetch/mapping failed:</b> {e}", status_code=500)
 
-    # --- 3. Stock
+    # --- 3. Stock ---
     try:
         nisbets_stock = download_excel_file(NISBETS_STOCK_FILE_ID)
         nortons_stock = download_excel_file(NORTONS_STOCK_FILE_ID)
@@ -274,7 +283,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
                 supplier_orders[supplier][order_no] = []
             supplier_orders[supplier][order_no].append((sku, to_supplier))
 
-    # --- 4. Nisbets: Split into batches of max 25 unique Order Numbers per file
+    # --- 4. Nisbets batch splitting ---
     nisbets_orders = list(supplier_orders['Nisbets'].keys())
     max_orders_per_file = 25
     nisbets_batches = [
@@ -297,7 +306,6 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
             nisbets_csv_links.append(link)
     download_link = "<br>".join(nisbets_csv_links) if nisbets_csv_links else ""
 
-    # --- 5. Format Output
     def format_order_block(order_dict, title):
         out = []
         for order, lines in order_dict.items():
@@ -324,7 +332,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     nisbets_out = "\n".join(nisbets_batch_blocks)
     stock_out   = format_order_block(stock_ship_orders, "stock shipments")
 
-    # --- 6. Zoho XLSX Generation (as before, not split)
+    # --- 6. Zoho XLSX Generation ---
     try:
         template_df    = pd.read_excel(ZOHO_TEMPLATE_PATH)
         zoho_col_order = list(template_df.columns)
@@ -365,7 +373,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     latest_zoho_xlsx = buffer.getvalue()
     zoho_download_link = "<a href='/download_zoho_xlsx' download='zoho_orders.xlsx'><button class='copy-btn' style='background:#0f9d58;right:auto;top:auto;position:relative;margin-bottom:1em;margin-left:1em;'>Download Zoho XLSX</button></a>"
 
-    # --- 7. Stock file updates (unchanged)
+    # --- 7. Stock file updates ---
     for sku in nisbets_shipped:
         if sku in nisbets_stock['Offer SKU'].values:
             idx = nisbets_stock[nisbets_stock['Offer SKU'] == sku].index[0]
@@ -384,7 +392,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
             return HTMLResponse("<b>Stock file update failed: File is open or locked in Excel.<br>Please close the file everywhere and try again in a minute.</b>", status_code=423)
         return HTMLResponse(f"<b>Stock file update failed:</b> {e}", status_code=500)
 
-    # --- 8. DPD CSV Generation (unchanged, same as before)
+    # --- 8. DPD CSV Generation ---
     try:
         dpd_template_df, dpd_col_headers, dpd_delim = get_dpd_template_columns(DPD_TEMPLATE_PATH)
         dpd_col_count = len(dpd_col_headers)
@@ -393,6 +401,25 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
         dpd_error_report_html = f"<b>Failed to load DPD template: {e}</b>"
         dpd_download_link = "<span style='color:#e87272;'>DPD template not loaded.</span>"
         html = f"""<div style='color:red;padding:1em'>{dpd_error_report_html}</div>"""
+        # --- UNMATCHED REPORT ADDED HERE ---
+        if unmatched_report:
+            report_html = """
+            <div class="out-card" style="background:#fff4e5;border:1px solid #ffc107;">
+              <h3>⚠️ Unmatched SKUs in Supplier.csv</h3>
+              <table style="width:100%;border-collapse:collapse;">
+                <tr><th>Order Number</th><th>Offer SKU</th><th>Quantity</th></tr>"""
+            for item in unmatched_report:
+                report_html += f"""
+                <tr>
+                  <td>{item['order_no']}</td>
+                  <td>{item['sku']}</td>
+                  <td>{item['qty']}</td>
+                </tr>"""
+            report_html += """
+              </table>
+            </div>
+            """
+            html += report_html
         return HTMLResponse(html)
 
     sku_limits = load_sku_limits()
@@ -536,7 +563,29 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     </div>
     {dpd_error_report_html}
     """
+
+    # --- 9. Unmatched SKU report at the end ---
+    if unmatched_report:
+        report_html = """
+        <div class="out-card" style="background:#fff4e5;border:1px solid #ffc107;">
+          <h3>⚠️ Unmatched SKUs in Supplier.csv</h3>
+          <table style="width:100%;border-collapse:collapse;">
+            <tr><th>Order Number</th><th>Offer SKU</th><th>Quantity</th></tr>"""
+        for item in unmatched_report:
+            report_html += f"""
+            <tr>
+              <td>{item['order_no']}</td>
+              <td>{item['sku']}</td>
+              <td>{item['qty']}</td>
+            </tr>"""
+        report_html += """
+          </table>
+        </div>
+        """
+        html += report_html
+
     return HTMLResponse(html)
+
 
 # ===============================
 #  Nisbets CSV Batch Download
