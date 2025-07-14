@@ -24,6 +24,26 @@ PO_MAP_FILE_ID = os.getenv("PO_MAP_FILE_ID", "01YTGSV5D4WTSUTV3D7FGKT6YKUKV4BIYI
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
 DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
 
+def upload_po_map(po_map):
+    token = get_graph_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    data = json.dumps(po_map).encode("utf-8")
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{PO_MAP_FILE_ID}/content"
+    r = requests.put(url, headers=headers, data=data)
+    r.raise_for_status()
+
+def download_po_map():
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{PO_MAP_FILE_ID}/content"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return json.loads(r.content.decode())
+
+
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
     data = {
@@ -128,14 +148,12 @@ def generate_po_number(batch_idx):
     return f"CB-NISBETS-{today}-{batch_idx+1:03d}"
 
 def save_po_map(po_number, batch_rows):
-    if os.path.exists(PO_LOG_FILE):
-        with open(PO_LOG_FILE, "r") as f:
-            po_map = json.load(f)
-    else:
+    try:
+        po_map = download_po_map()
+    except Exception:
         po_map = {}
     po_map[po_number] = batch_rows
-    with open(PO_LOG_FILE, "w") as f:
-        json.dump(po_map, f, indent=2)
+    upload_po_map(po_map)
     
 
 app = FastAPI()
