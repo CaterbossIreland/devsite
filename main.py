@@ -433,7 +433,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
             csv_bytes = csv_buffer.getvalue().encode('utf-8')
             latest_nisbets_csv_batches[po_number] = csv_bytes
             save_po_map(po_number, batch_rows)
-            link = f"<a href='/download_nisbets_csv/{po_number}' download='Nisbets_{po_number}.csv'><button class='copy-btn' style='right:auto;top:auto;position:relative;margin-bottom:1em;'>Download Nisbets CSV {po_number}</button></a>"
+            link = f"<a href='/download_nisbets_csv/{po_number}' download='{po_number}.csv'><button class='copy-btn' style='right:auto;top:auto;position:relative;margin-bottom:1em;'>Download Nisbets CSV {po_number}</button></a>"
             nisbets_csv_links.append(link)
 
     def format_order_block(order_dict, title):
@@ -724,7 +724,7 @@ async def download_nisbets_csv(po_number: str):
     return StreamingResponse(
         BytesIO(csv_bytes),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=Nisbets_{po_number}.csv"}
+        headers={"Content-Disposition": f"attachment; filename={po_number}.csv"}
     )
 
 @app.get("/download_zoho_xlsx")
