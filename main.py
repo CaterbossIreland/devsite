@@ -292,21 +292,6 @@ async def main_upload_form(request: Request):
     </script>
     """
 
-
-
-
-
-@app.get("/download_nisbets_csv/{batch_idx}")
-async def download_nisbets_csv(batch_idx: int):
-    csv_bytes = latest_nisbets_csv_batches.get(batch_idx)
-    if not csv_bytes:
-        return HTMLResponse(f"<b>No Nisbets CSV batch {batch_idx+1} generated in this session yet.</b>", status_code=404)
-    return StreamingResponse(
-        BytesIO(csv_bytes),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=Nisbets_{batch_idx+1}.csv"}
-    )
-
 @app.get("/download_zoho_xlsx")
 async def download_zoho_xlsx():
     if not latest_zoho_xlsx:
