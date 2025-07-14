@@ -20,6 +20,7 @@ SUPPLIER_FILE_ID = os.getenv("SUPPLIER_FILE_ID", "01YTGSV5DGZEMEISWEYVDJRULO4ADD
 NISBETS_STOCK_FILE_ID = os.getenv("NISBETS_STOCK_FILE_ID", "01YTGSV5HJCNBDXINJP5FJE2TICQ6Q3NEX")
 NORTONS_STOCK_FILE_ID = os.getenv("NORTONS_STOCK_FILE_ID", "01YTGSV5FBVS7JYODGLREKL273FSJ3XRLP")
 SKU_MAX_FILE_ID = os.getenv("SKU_MAX_FILE_ID", "01YTGSV5DOW27RMJGS3JA2IODH6HCF4647")
+PO_MAP_FILE_ID = os.getenv("PO_MAP_FILE_ID", "01YTGSV5D4WTSUTV3D7FGKT6YKUKV4BIYI")
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
 DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
 
@@ -874,10 +875,23 @@ async def po_lookup_post(request: Request, po_number: str = Form(...), sku: str 
     sku = sku.strip().upper()
     po_number = po_number.strip()
     # Load the PO mapping file
-    if not os.path.exists(PO_LOG_FILE):
-        return HTMLResponse("<b>No PO map log found.</b>")
-    with open(PO_LOG_FILE, "r") as f:
-        po_map = json.load(f)
+def upload_po_map(po_map):
+    token = get_graph_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    data = json.dumps(po_map).encode("utf-8")
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{PO_MAP_FILE_ID}/content"
+    r = requests.put(url, headers=headers, data=data)
+    r.raise_for_status()
+def download_po_map():
+    token = get_graph_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{PO_MAP_FILE_ID}/content"
+    r = requests.get(url, headers=headers)
+    r.raise_for_status()
+    return json.loads(r.content.decode())
     batch = po_map.get(po_number)
     if not batch:
         return HTMLResponse(f"<b>No batch found for PO number: {po_number}</b>")
