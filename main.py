@@ -189,6 +189,9 @@ async def admin_dashboard(request: Request):
     </style>
     <div class="admin-container">
         <h2>Admin Dashboard</h2>
+        <div style="margin-bottom:2em;">
+    <a href="/"><button>Upload Order File (Process Orders)</button></a>
+</div>
         <form method="post" action="/admin/set-max-sku">
             <h3>Set Max Per Parcel for SKU</h3>
             <input type="text" name="sku" placeholder="SKU" required>
