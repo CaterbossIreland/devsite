@@ -239,6 +239,10 @@ async def admin_dashboard(request: Request):
             <form method="post" action="/logout">
                 <button type="submit">Logout</button>
             </form>
+            <div style="margin-top:2em;">
+    <a href="/admin/lookup">PO & SKU Lookup Tool →</a>
+</div>
+
         </div>
     </div>
     """
@@ -853,3 +857,61 @@ async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
         )
     except Exception as e:
         return HTMLResponse(f"<b>Failed: {e}</b>", status_code=500)
+# --- Nisbets PO/SKU → Order Lookup Tool ---
+
+from fastapi.responses import HTMLResponse
+from fastapi import Request, Form
+
+@app.get("/admin/lookup", response_class=HTMLResponse)
+async def po_lookup_form(request: Request):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    return """
+    <style>
+    .lookup-container { max-width:400px;margin:4em auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px #0002;padding:2em;font-family:'Segoe UI',Arial,sans-serif;}
+    label {display:block;margin-top:1em;}
+    </style>
+    <div class="lookup-container">
+        <h2>Find Order Number by PO and SKU</h2>
+        <form method="post" action="/admin/lookup">
+            <label>PO Number:<br><input name="po_number" style="width:100%;"></label>
+            <label>SKU:<br><input name="sku" style="width:100%;"></label>
+            <button type="submit" style="margin-top:1.2em;">Lookup</button>
+        </form>
+        <div style="margin-top:1.5em;"><a href="/admin">← Back to Admin Dashboard</a></div>
+    </div>
+    """
+
+@app.post("/admin/lookup", response_class=HTMLResponse)
+async def po_lookup_post(request: Request, po_number: str = Form(...), sku: str = Form(...)):
+    if not request.session.get("admin_logged_in"):
+        return RedirectResponse("/admin-login", status_code=303)
+    sku = sku.strip().upper()
+    po_number = po_number.strip()
+    # Load the PO mapping file
+    if not os.path.exists(PO_LOG_FILE):
+        return HTMLResponse("<b>No PO map log found.</b>")
+    with open(PO_LOG_FILE, "r") as f:
+        po_map = json.load(f)
+    batch = po_map.get(po_number)
+    if not batch:
+        return HTMLResponse(f"<b>No batch found for PO number: {po_number}</b>")
+    # Look for matching SKU(s)
+    orders = [row["Order Number"] for row in batch if row["Offer SKU"].strip().upper() == sku]
+    if not orders:
+        result = f"No order found for SKU <b>{sku}</b> in PO <b>{po_number}</b>."
+    else:
+        result = f"<b>Order(s) for SKU <b>{sku}</b> in PO <b>{po_number}</b>:</b><br>" + "<br>".join(orders)
+    return f"""
+    <style>.lookup-container {{ max-width:400px;margin:4em auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px #0002;padding:2em;font-family:'Segoe UI',Arial,sans-serif;}}</style>
+    <div class="lookup-container">
+        <h2>Find Order Number by PO and SKU</h2>
+        <form method="post" action="/admin/lookup">
+            <label>PO Number:<br><input name="po_number" value="{po_number}" style="width:100%;"></label>
+            <label>SKU:<br><input name="sku" value="{sku}" style="width:100%;"></label>
+            <button type="submit" style="margin-top:1.2em;">Lookup</button>
+        </form>
+        <div style="margin:1.5em 0 0.5em 0; color:#193; font-weight:bold;">{result}</div>
+        <div style="margin-top:1.5em;"><a href="/admin">← Back to Admin Dashboard</a></div>
+    </div>
+    """
