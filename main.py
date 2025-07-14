@@ -43,6 +43,15 @@ def download_po_map():
     r.raise_for_status()
     return json.loads(r.content.decode())
 
+def save_po_map(po_number, batch_rows):
+    try:
+        po_map = download_po_map()
+    except Exception:
+        po_map = {}
+    po_map[po_number] = batch_rows
+    upload_po_map(po_map)
+
+
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -141,7 +150,6 @@ def restore_file_version(file_id, version_id):
     return resp.ok
 
 # --- PO Mapping helpers ---
-PO_LOG_FILE = "nisbets_po_map.json"
 
 def generate_po_number(batch_idx):
     today = datetime.now().strftime("%Y%m%d")
@@ -866,25 +874,39 @@ async def musgraves_dpd_upload(request: Request, file: UploadFile = File(...)):
 from fastapi.responses import HTMLResponse
 from fastapi import Request, Form
 
-@app.get("/admin/lookup", response_class=HTMLResponse)
-async def po_lookup_form(request: Request):
+@app.post("/admin/lookup", response_class=HTMLResponse)
+async def po_lookup_post(request: Request, po_number: str = Form(...), sku: str = Form(...)):
     if not request.session.get("admin_logged_in"):
         return RedirectResponse("/admin-login", status_code=303)
-    return """
-    <style>
-    .lookup-container { max-width:400px;margin:4em auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px #0002;padding:2em;font-family:'Segoe UI',Arial,sans-serif;}
-    label {display:block;margin-top:1em;}
-    </style>
+    sku = sku.strip().upper()
+    po_number = po_number.strip()
+    try:
+        po_map = download_po_map()
+    except Exception:
+        return HTMLResponse("<b>No PO map log found or failed to load from OneDrive.</b>")
+    batch = po_map.get(po_number)
+    if not batch:
+        return HTMLResponse(f"<b>No batch found for PO number: {po_number}</b>")
+    # Look for matching SKU(s)
+    orders = [row["Order Number"] for row in batch if row["Offer SKU"].strip().upper() == sku]
+    if not orders:
+        result = f"No order found for SKU <b>{sku}</b> in PO <b>{po_number}</b>."
+    else:
+        result = f"<b>Order(s) for SKU <b>{sku}</b> in PO <b>{po_number}</b>:</b><br>" + "<br>".join(orders)
+    return f"""
+    <style>.lookup-container {{ max-width:400px;margin:4em auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px #0002;padding:2em;font-family:'Segoe UI',Arial,sans-serif;}}</style>
     <div class="lookup-container">
         <h2>Find Order Number by PO and SKU</h2>
         <form method="post" action="/admin/lookup">
-            <label>PO Number:<br><input name="po_number" style="width:100%;"></label>
-            <label>SKU:<br><input name="sku" style="width:100%;"></label>
+            <label>PO Number:<br><input name="po_number" value="{po_number}" style="width:100%;"></label>
+            <label>SKU:<br><input name="sku" value="{sku}" style="width:100%;"></label>
             <button type="submit" style="margin-top:1.2em;">Lookup</button>
         </form>
+        <div style="margin:1.5em 0 0.5em 0; color:#193; font-weight:bold;">{result}</div>
         <div style="margin-top:1.5em;"><a href="/admin">← Back to Admin Dashboard</a></div>
     </div>
     """
+
 
 @app.post("/admin/lookup", response_class=HTMLResponse)
 async def po_lookup_post(request: Request, po_number: str = Form(...), sku: str = Form(...)):
