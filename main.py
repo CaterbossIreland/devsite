@@ -382,7 +382,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
 
     # --- 4. Nisbets batch splitting ---
     nisbets_orders = list(supplier_orders['Nisbets'].keys())
-    max_orders_per_file = 25
+    max_orders_per_file = 20
     nisbets_batches = [
         nisbets_orders[i:i+max_orders_per_file]
         for i in range(0, len(nisbets_orders), max_orders_per_file)
