@@ -119,6 +119,24 @@ def restore_file_version(file_id, version_id):
     resp.raise_for_status()
     return resp.ok
 
+# --- PO Mapping helpers ---
+PO_LOG_FILE = "nisbets_po_map.json"
+
+def generate_po_number(batch_idx):
+    today = datetime.now().strftime("%Y%m%d")
+    return f"CB-NISBETS-{today}-{batch_idx+1:03d}"
+
+def save_po_map(po_number, batch_rows):
+    if os.path.exists(PO_LOG_FILE):
+        with open(PO_LOG_FILE, "r") as f:
+            po_map = json.load(f)
+    else:
+        po_map = {}
+    po_map[po_number] = batch_rows
+    with open(PO_LOG_FILE, "w") as f:
+        json.dump(po_map, f, indent=2)
+    
+
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key="!supersecret!")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -388,20 +406,23 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
         nisbets_orders[i:i+max_orders_per_file]
         for i in range(0, len(nisbets_orders), max_orders_per_file)
     ]
-    nisbets_csv_links = []
-    for idx, batch in enumerate(nisbets_batches):
-        batch_rows = []
-        for order in batch:
-            for sku, qty in supplier_orders['Nisbets'][order]:
-                batch_rows.append({'Order Number': order, 'Offer SKU': sku, 'Quantity': qty})
-        if batch_rows:
-            df_batch = pd.DataFrame(batch_rows)
-            csv_buffer = StringIO()
-            df_batch.to_csv(csv_buffer, index=False)
-            csv_bytes = csv_buffer.getvalue().encode('utf-8')
-            latest_nisbets_csv_batches[idx] = csv_bytes
-            link = f"<a href='/download_nisbets_csv/{idx}' download='Nisbets_{idx+1}.csv'><button class='copy-btn' style='right:auto;top:auto;position:relative;margin-bottom:1em;'>Download Nisbets CSV Batch {idx+1}</button></a>"
-            nisbets_csv_links.append(link)
+nisbets_csv_links = []
+for idx, batch in enumerate(nisbets_batches):
+    batch_rows = []
+    for order in batch:
+        for sku, qty in supplier_orders['Nisbets'][order]:
+            batch_rows.append({'Order Number': order, 'Offer SKU': sku, 'Quantity': qty})
+    if batch_rows:
+        po_number = generate_po_number(idx)
+        df_batch = pd.DataFrame(batch_rows)
+        csv_buffer = StringIO()
+        df_batch.to_csv(csv_buffer, index=False)
+        csv_bytes = csv_buffer.getvalue().encode('utf-8')
+        latest_nisbets_csv_batches[po_number] = csv_bytes  # KEY IS NOW PO NUMBER, not idx!
+        save_po_map(po_number, batch_rows)
+        link = f"<a href='/download_nisbets_csv/{po_number}' download='Nisbets_{po_number}.csv'><button class='copy-btn' style='right:auto;top:auto;position:relative;margin-bottom:1em;'>Download Nisbets CSV {po_number}</button></a>"
+        nisbets_csv_links.append(link)
+
     download_link = "<br>".join(nisbets_csv_links) if nisbets_csv_links else ""
 
     def format_order_block(order_dict, title):
@@ -692,15 +713,15 @@ from fastapi.responses import StreamingResponse
 
 latest_nisbets_csv_batches = {}
 
-@app.get("/download_nisbets_csv/{batch_idx}")
-async def download_nisbets_csv(batch_idx: int):
-    csv_bytes = latest_nisbets_csv_batches.get(batch_idx)
+@app.get("/download_nisbets_csv/{po_number}")
+async def download_nisbets_csv(po_number: str):
+    csv_bytes = latest_nisbets_csv_batches.get(po_number)
     if not csv_bytes:
-        return HTMLResponse(f"<b>No Nisbets CSV batch {batch_idx+1} generated in this session yet.</b>", status_code=404)
+        return HTMLResponse(f"<b>No Nisbets CSV batch {po_number} generated in this session yet.</b>", status_code=404)
     return StreamingResponse(
         BytesIO(csv_bytes),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=Nisbets_{batch_idx+1}.csv"}
+        headers={"Content-Disposition": f"attachment; filename=Nisbets_{po_number}.csv"}
     )
 
 # ===============================
