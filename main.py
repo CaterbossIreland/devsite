@@ -496,6 +496,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
         if col not in zoho_df.columns:
             zoho_df[col] = ""
     zoho_df = zoho_df[zoho_col_order]
+    zoho_df = zoho_df.sort_values("Order number").reset_index(drop=True)
     buffer = BytesIO()
     zoho_df.to_excel(buffer, index=False)
     buffer.seek(0)
@@ -605,6 +606,8 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
                 used_orders.add(row['Order number'])
 
     dpd_final_df = pd.DataFrame(final_order_rows).drop_duplicates('Order number')
+    dpd_final_df = dpd_final_df.sort_values("Order number").reset_index(drop=True)
+
     dpd_field_map = {
         0:  lambda row: row.get('Order number', ''),
         1:  lambda row: row.get('Shipping address company', ''),
