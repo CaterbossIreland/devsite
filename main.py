@@ -9,6 +9,8 @@ from io import BytesIO, StringIO
 from datetime import datetime
 import tempfile
 import json
+import random
+import string
 
 # ---------- CONFIGURATION ----------
 TENANT_ID = os.getenv("TENANT_ID", "ce280aae-ee92-41fe-ab60-66b37ebc97dd")
@@ -22,6 +24,7 @@ SKU_MAX_FILE_ID = os.getenv("SKU_MAX_FILE_ID", "01YTGSV5DOW27RMJGS3JA2IODH6HCF46
 PO_MAP_FILE_ID = os.getenv("PO_MAP_FILE_ID", "01YTGSV5D4WTSUTV3D7FGKT6YKUKV4BIYI")
 ZOHO_TEMPLATE_PATH = "column format.xlsx"
 DPD_TEMPLATE_PATH = "DPD.Import(1).csv"
+SESSION_UNIQUE = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
 
 def get_graph_access_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -148,8 +151,8 @@ def save_po_map(po_number, batch_rows):
     upload_po_map(po_map)
 
 def generate_po_number(batch_idx):
-    today = datetime.now().strftime("%Y%m%d")
-    return f"CB-NISBETS-{today}-{batch_idx+1:03d}"
+    # 8 characters: "PO" + 4 random (A-Z, 0-9) + 2 digit batch
+    return f"PO{SESSION_UNIQUE}{batch_idx+1:02d}"
 
 # ========== FASTAPI SETUP ==========
 app = FastAPI()
