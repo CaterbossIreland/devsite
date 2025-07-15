@@ -564,6 +564,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     used_orders = set()
     
 import math
+
 grouped = orders_df.groupby('base_order')
 for base, group in grouped:
     has_A = (group['order_suffix'] == 'A').any()
@@ -617,6 +618,7 @@ for base, group in grouped:
         if row['Order number'] not in used_orders:
             final_order_rows.append(row)
             used_orders.add(row['Order number'])
+
 
 
     dpd_final_df = pd.DataFrame(final_order_rows).drop_duplicates('Order number')
