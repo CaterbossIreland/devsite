@@ -563,61 +563,63 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     final_order_rows = []
     used_orders = set()
     
-import math
+    import math
 
-grouped = orders_df.groupby('base_order')
-for base, group in grouped:
-    has_A = (group['order_suffix'] == 'A').any()
-    has_B = (group['order_suffix'] == 'B').any()
-    row_A = group[group['order_suffix'] == 'A'].iloc[0] if has_A else None
-    row_B = group[group['order_suffix'] == 'B'].iloc[0] if has_B else None
+    grouped = orders_df.groupby('base_order')
+    for base, group in grouped:
+        has_A = (group['order_suffix'] == 'A').any()
+        has_B = (group['order_suffix'] == 'B').any()
+        row_A = group[group['order_suffix'] == 'A'].iloc[0] if has_A else None
+        row_B = group[group['order_suffix'] == 'B'].iloc[0] if has_B else None
 
-    if has_A and has_B:
-        # Use 'A' row as output template
-        row = row_A.copy()
-        # Combine all SKUs/qtys for A + B, using max-per logic, then min 2
-        total_labels = 0
-        for _, r in group.iterrows():
-            sku = str(r.get('Offer SKU', '')).strip().upper()
-            qty = int(r.get('Quantity', 1))
-            max_per = sku_limits.get(sku, 1)
-            num_labels = math.ceil(qty / int(max_per))
-            total_labels += num_labels
-        total_labels = max(2, total_labels)
-        row['dpd_parcel_count'] = total_labels
-        if row['Order number'] not in used_orders:
-            final_order_rows.append(row)
-            used_orders.add(row['Order number'])
+        if has_A and has_B:
+            # Use 'A' row as output template
+            row = row_A.copy()
+            # Combine all SKUs/qtys for A + B, using max-per logic, then min 2
+            total_labels = 0
+            for _, r in group.iterrows():
+                sku = str(r.get('Offer SKU', '')).strip().upper()
+                qty = int(r.get('Quantity', 1))
+                max_per = sku_limits.get(sku, 1)
+                num_labels = math.ceil(qty / int(max_per))
+                total_labels += num_labels
+            total_labels = max(2, total_labels)
+            row['dpd_parcel_count'] = total_labels
+            if row['Order number'] not in used_orders:
+                final_order_rows.append(row)
+                used_orders.add(row['Order number'])
 
-    elif has_A:
-        row = row_A.copy()
-        # Only process A lines
-        total_labels = 0
-        for _, r in group[group['order_suffix'] == 'A'].iterrows():
-            sku = str(r.get('Offer SKU', '')).strip().upper()
-            qty = int(r.get('Quantity', 1))
-            max_per = sku_limits.get(sku, 1)
-            num_labels = math.ceil(qty / int(max_per))
-            total_labels += num_labels
-        row['dpd_parcel_count'] = total_labels
-        if row['Order number'] not in used_orders:
-            final_order_rows.append(row)
-            used_orders.add(row['Order number'])
+        elif has_A:
+            row = row_A.copy()
+            # Only process A lines
+            total_labels = 0
+            for _, r in group[group['order_suffix'] == 'A'].iterrows():
+                sku = str(r.get('Offer SKU', '')).strip().upper()
+                qty = int(r.get('Quantity', 1))
+                max_per = sku_limits.get(sku, 1)
+                num_labels = math.ceil(qty / int(max_per))
+                total_labels += num_labels
+            row['dpd_parcel_count'] = total_labels
+            if row['Order number'] not in used_orders:
+                final_order_rows.append(row)
+                used_orders.add(row['Order number'])
 
-    elif has_B:
-        row = row_B.copy()
-        # Only process B lines
-        total_labels = 0
-        for _, r in group[group['order_suffix'] == 'B'].iterrows():
-            sku = str(r.get('Offer SKU', '')).strip().upper()
-            qty = int(r.get('Quantity', 1))
-            max_per = sku_limits.get(sku, 1)
-            num_labels = math.ceil(qty / int(max_per))
-            total_labels += num_labels
-        row['dpd_parcel_count'] = total_labels
-        if row['Order number'] not in used_orders:
-            final_order_rows.append(row)
-            used_orders.add(row['Order number'])
+        elif has_B:
+            row = row_B.copy()
+            # Only process B lines
+            total_labels = 0
+            for _, r in group[group['order_suffix'] == 'B'].iterrows():
+                sku = str(r.get('Offer SKU', '')).strip().upper()
+                qty = int(r.get('Quantity', 1))
+                max_per = sku_limits.get(sku, 1)
+                num_labels = math.ceil(qty / int(max_per))
+                total_labels += num_labels
+            row['dpd_parcel_count'] = total_labels
+            if row['Order number'] not in used_orders:
+                final_order_rows.append(row)
+                used_orders.add(row['Order number'])
+
+
 
 
 
