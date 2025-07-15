@@ -570,25 +570,27 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
 
     grouped = orders_df.groupby('base_order')
     for base, group in grouped:
-        # Gather all SKUs and quantities for this base order (A and/or B)
-        total_labels = 0
+        special_label_count = 0
         has_special = False
+        has_other = False
         for _, r in group.iterrows():
             sku = str(r.get('Offer SKU', '')).strip().upper()
             qty = int(r.get('Quantity', 1))
             max_per = sku_limits.get(sku)
             if max_per is not None:
                 has_special = True
-                num_labels = math.ceil(qty / int(max_per))
-                total_labels += num_labels
+                special_label_count += math.ceil(qty / int(max_per))
             else:
-                total_labels += qty  # If no max_per, assume 1 parcel per qty
+                has_other = True
 
-        # If there are both A and B, at least 2 parcels unless special rules apply
-        if len(group) > 1 and not has_special:
-            total_labels = max(total_labels, 2)
-        elif total_labels == 0:
-            total_labels = 1  # Fallback, should never hit unless empty
+        if has_special:
+            total_labels = special_label_count
+            if has_other:
+                total_labels += 1  # One extra label for all non-special SKUs, if any
+            if total_labels == 0:
+                total_labels = 1  # Failsafe: never zero labels
+        else:
+            total_labels = 2 if len(group) > 1 else 1
 
         # Output only the A row (if exists), otherwise B
         if 'A' in group['order_suffix'].values:
@@ -601,7 +603,6 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
             row['dpd_parcel_count'] = total_labels
             final_order_rows.append(row)
             used_base_orders.add(base)
-
 
 
 
