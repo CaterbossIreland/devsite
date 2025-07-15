@@ -590,13 +590,10 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
         if has_A and has_B:
             row = row_A.copy()  # Use 'A' part as template for the combined row
             if has_special:
-                # For special SKUs, sum as before
                 total_labels = max(2, total_labels)
                 row['dpd_parcel_count'] = total_labels
             else:
-                # For ordinary, exactly 2 parcels for the combined A+B
                 row['dpd_parcel_count'] = 2
-            # Only add one row for the pair, not two!
             if row['Order number'] not in used_orders:
                 final_order_rows.append(row)
                 used_orders.add(row['Order number'])
@@ -620,7 +617,6 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
             if row['Order number'] not in used_orders:
                 final_order_rows.append(row)
                 used_orders.add(row['Order number'])
-
 
 
 
