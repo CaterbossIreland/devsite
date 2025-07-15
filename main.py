@@ -584,9 +584,11 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
             else:
                 total_labels += qty  # If no max_per, assume 1 parcel per qty
 
-        # At least 2 if both A and B exist (if that's your business rule)
+        # If there are both A and B, at least 2 parcels unless special rules apply
         if len(group) > 1 and not has_special:
             total_labels = max(total_labels, 2)
+        elif total_labels == 0:
+            total_labels = 1  # Fallback, should never hit unless empty
 
         # Output only the A row (if exists), otherwise B
         if 'A' in group['order_suffix'].values:
