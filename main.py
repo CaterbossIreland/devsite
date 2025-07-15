@@ -565,11 +565,11 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     
     import math
 
-final_order_rows = []
-used_orders = set()
+    final_order_rows = []
+    used_orders = set()
 
-grouped = orders_df.groupby('base_order')
-for base, group in grouped:
+    grouped = orders_df.groupby('base_order')
+    for base, group in grouped:
     has_A = (group['order_suffix'] == 'A').any()
     has_B = (group['order_suffix'] == 'B').any()
     row_A = group[group['order_suffix'] == 'A'].iloc[0] if has_A else None
@@ -600,7 +600,7 @@ for base, group in grouped:
         if row['Order number'] not in used_orders:
             final_order_rows.append(row)
             used_orders.add(row['Order number'])
-    elif has_A:
+     elif has_A:
         row = row_A.copy()
         if has_special:
             total_labels = max(1, total_labels)
@@ -610,7 +610,7 @@ for base, group in grouped:
         if row['Order number'] not in used_orders:
             final_order_rows.append(row)
             used_orders.add(row['Order number'])
-    elif has_B:
+     elif has_B:
         row = row_B.copy()
         if has_special:
             total_labels = max(1, total_labels)
