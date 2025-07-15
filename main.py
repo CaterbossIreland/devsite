@@ -566,18 +566,13 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     import math
 
     final_order_rows = []
-    used_orders = set()
+    used_base_orders = set()
 
     grouped = orders_df.groupby('base_order')
     for base, group in grouped:
-        has_A = (group['order_suffix'] == 'A').any()
-        has_B = (group['order_suffix'] == 'B').any()
-        row_A = group[group['order_suffix'] == 'A'].iloc[0] if has_A else None
-        row_B = group[group['order_suffix'] == 'B'].iloc[0] if has_B else None
-
-        # Combine both A and B lines for special check
-        has_special = False
+        # Gather all SKUs and quantities for this base order (A and/or B)
         total_labels = 0
+        has_special = False
         for _, r in group.iterrows():
             sku = str(r.get('Offer SKU', '')).strip().upper()
             qty = int(r.get('Quantity', 1))
@@ -586,37 +581,24 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
                 has_special = True
                 num_labels = math.ceil(qty / int(max_per))
                 total_labels += num_labels
+            else:
+                total_labels += qty  # If no max_per, assume 1 parcel per qty
 
-        if has_A and has_B:
-            row = row_A.copy()  # Use 'A' part as template for the combined row
-            if has_special:
-                total_labels = max(2, total_labels)
-                row['dpd_parcel_count'] = total_labels
-            else:
-                row['dpd_parcel_count'] = 2
-            if row['Order number'] not in used_orders:
-                final_order_rows.append(row)
-                used_orders.add(row['Order number'])
-        elif has_A:
-            row = row_A.copy()
-            if has_special:
-                total_labels = max(1, total_labels)
-                row['dpd_parcel_count'] = total_labels
-            else:
-                row['dpd_parcel_count'] = 1
-            if row['Order number'] not in used_orders:
-                final_order_rows.append(row)
-                used_orders.add(row['Order number'])
-        elif has_B:
-            row = row_B.copy()
-            if has_special:
-                total_labels = max(1, total_labels)
-                row['dpd_parcel_count'] = total_labels
-            else:
-                row['dpd_parcel_count'] = 1
-            if row['Order number'] not in used_orders:
-                final_order_rows.append(row)
-                used_orders.add(row['Order number'])
+        # At least 2 if both A and B exist (if that's your business rule)
+        if len(group) > 1 and not has_special:
+            total_labels = max(total_labels, 2)
+
+        # Output only the A row (if exists), otherwise B
+        if 'A' in group['order_suffix'].values:
+            row = group[group['order_suffix'] == 'A'].iloc[0].copy()
+            row['dpd_parcel_count'] = total_labels
+            final_order_rows.append(row)
+            used_base_orders.add(base)
+        elif 'B' in group['order_suffix'].values:
+            row = group[group['order_suffix'] == 'B'].iloc[0].copy()
+            row['dpd_parcel_count'] = total_labels
+            final_order_rows.append(row)
+            used_base_orders.add(base)
 
 
 
