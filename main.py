@@ -562,8 +562,8 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
     orders_df['order_suffix'] = orders_df['Order number'].str.extract(r'-(A|B)$')
     final_order_rows = []
     used_orders = set()
+    
 import math
-
 grouped = orders_df.groupby('base_order')
 for base, group in grouped:
     has_A = (group['order_suffix'] == 'A').any()
