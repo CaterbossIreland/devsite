@@ -621,7 +621,7 @@ async def upload_orders_display(request: Request, file: UploadFile = File(...)):
         7:  lambda row: row.get('Shipping address zip', ''),
         8:  lambda row: '372',
         9:  lambda row: str(row.get('dpd_parcel_count', 1)),
-        10: lambda row: '10',
+        10: lambda row: '1',
         11: lambda row: 'N',
         12: lambda row: 'O',
         23: lambda row: row.get('Shipping address first name', ''),
